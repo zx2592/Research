@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.pyc
+*.log
+*.pid
+
+# Environments
+.venv/
+venv/
+.env
+.ipynb_checkpoints/
+data/
+
+# Secrets & Personal Config
+config.yaml
+watchlist.json
+Config/*.md
+Config/holdings.json
+Config/temp_*.json
+Config/ai建议/
+Config/ai建议_archived/
+Config/*.csv
+Config/position*.csv
+# 个人投资画像（真实文件；仓库仅保留 *.example 模板）
+Memory_Layer/Investment_Persona.md
+# 已脱敏示例模板需保留入库（显式取消忽略）
+!Config/holdings.example.json
+!Memory_Layer/Investment_Persona.example.md
+
+# Investment Data & Reports
+investment_data.db
+downloads/
+Reports/
+Memory_Layer/Knowledge_Base/Trade_Records/
+Memory_Layer/Knowledge_Base/Knowledge_Reserve/
+Memory_Layer/Knowledge_Base/KB_INDEX.md
+
+# Local scratch / debug artifacts
+scratch/
+scratch_output*.txt
+cme_data.json
+mrvl_data.json
+opencli_help.txt
+twitter_help.txt
+
+# Logs & Temporary Files
+bot_service.log
+bot_log.txt
+test_output.json
+snapshot.json
+system.log
+trigger_service.out.log
+trigger_service.err.log
+.codex_runtime/
+.codex_tmp/
+
+# Agent
+# .agent/ (Uncommented to sync base skills and workflows)

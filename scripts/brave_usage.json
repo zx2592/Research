@@ -1,0 +1,14 @@
+{
+  "total_calls": 15,
+  "monthly_calls": {
+    "2026-02": 9,
+    "2026-03": 6
+  },
+  "last_reset": "2026-02-01",
+  "calls_by_type": {
+    "stock_news": 5,
+    "market_movers": 5,
+    "sector_news": 5,
+    "macro_event": 0
+  }
+}

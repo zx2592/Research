@@ -1,0 +1,46 @@
+{
+  "_comment": "示例模板 — 复制为 Config/holdings.json 后填入你的真实持仓。holdings.json 已被 .gitignore 忽略，不会进入版本库。真实文件通常由 parse_positions.py 从券商导出自动生成。",
+  "last_updated": "YYYY-MM-DD",
+  "csv_source": "Ledger (Manual Sync)",
+  "extra_cash_usd": 0.0,
+  "summary": {
+    "total_cost_basis_usd": 100000.0,
+    "allocation": {
+      "Cash/Yield": { "value": 10000.0, "pct": 10.0 },
+      "Short-Term Satellite": { "value": 40000.0, "pct": 40.0 },
+      "Long-Term Core": { "value": 50000.0, "pct": 50.0 }
+    },
+    "by_sector": {
+      "Tech/Internet": { "value": 50000.0, "pct": 50.0 },
+      "Other": { "value": 50000.0, "pct": 50.0 }
+    }
+  },
+  "tickers": {
+    "TICKER_A": {
+      "strategy": "Long-Term Core",
+      "sector": "Tech/Internet",
+      "total_shares": 100.0,
+      "avg_cost_usd": 100.0,
+      "cost_basis_usd": 10000.0,
+      "has_options": false,
+      "accounts": ["ACCOUNT_ID"],
+      "positions": [
+        { "type": "STK", "shares": 100.0, "value": 10000.0 }
+      ]
+    },
+    "TICKER_B": {
+      "strategy": "Short-Term Satellite",
+      "sector": "Other",
+      "total_shares": 200.0,
+      "avg_cost_usd": 50.0,
+      "cost_basis_usd": 10000.0,
+      "has_options": false,
+      "accounts": ["ACCOUNT_ID"],
+      "positions": [
+        { "type": "STK", "shares": 200.0, "value": 10000.0 }
+      ]
+    }
+  },
+  "long_term_tickers": ["TICKER_A"],
+  "cash_tickers": ["BIL"]
+}

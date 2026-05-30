@@ -1,0 +1,34 @@
+# System Configuration
+
+gemini:
+  api_key: "YOUR_GEMINI_API_KEY"
+  model: "gemini-flash-latest" # or gemini-pro
+
+telegram:
+  bot_token: "YOUR_TELEGRAM_BOT_TOKEN"
+  chat_id: "YOUR_TELEGRAM_CHAT_ID"
+
+email:
+  smtp_server: "smtp.gmail.com"
+  smtp_port: 587
+  sender_email: "your_email@gmail.com"
+  password: "your_app_password"
+  recipient_email: "receiver@example.com"
+
+scraping:
+  news_history_hours: 24
+  min_importance_score: 2    # Record items with score >= 2
+  alert_threshold: 8         # Alert for items with score >= 8
+
+reddit:
+  client_id: "YOUR_REDDIT_CLIENT_ID"
+  client_secret: "YOUR_REDDIT_CLIENT_SECRET"
+  user_agent: "invest_bot_v1"
+
+twitter:
+  # Optional: For official API or scraping
+  bearer_token: "YOUR_TWITTER_BEARER_TOKEN"
+
+system:
+  loop_interval_minutes: 15
+  database_path: "investment_data.db"
