@@ -4,6 +4,9 @@ __pycache__/
 *.log
 *.pid
 
+# Node.js
+node_modules/
+
 # Environments
 .venv/
 venv/
