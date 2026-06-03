@@ -42,12 +42,6 @@ def main() -> None:
         help="Disable earnings triggers for this run.",
     )
     parser.add_argument(
-        "--executor",
-        choices=["auto", "desktop", "vps"],
-        default="auto",
-        help="Workflow executor mode for triggered actions.",
-    )
-    parser.add_argument(
         "--loop",
         action="store_true",
         help="Keep running and poll for trigger events continuously.",
@@ -62,7 +56,6 @@ def main() -> None:
 
     if args.loop:
         serve_trigger_loop(
-            executor_mode=args.executor,
             poll_seconds=args.poll_seconds,
             disable_schedule=args.disable_schedule,
             disable_price=args.disable_price,
@@ -72,7 +65,6 @@ def main() -> None:
 
     now = datetime.fromisoformat(args.now) if args.now else datetime.now()
     messages = run_trigger_cycle(
-        executor_mode=args.executor,
         now=now,
         schedule=args.schedule,
         disable_schedule=args.disable_schedule,

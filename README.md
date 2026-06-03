@@ -26,10 +26,10 @@
 | 层 | 职责 | 实现 |
 |:---|:---|:---|
 | **Eyes（感知层）** | 统一数据采集与缓存 | `core/data_manager.py` + `services/datahub/`：yfinance、tushare、Tavily、Brave、RSS、opencli（80+ 站点适配器）、社交舆情抓取 |
-| **Brain（认知层）** | LLM 处理与工作流编排 | `core/llm_client.py` + `.agent/workflows/`：双模式 LLM（桌面 IDE Agent / VPS google-genai），17 个工作流定义分析 SOP |
+| **Brain（认知层）** | LLM 处理与工作流编排 | `core/llm_client.py` + `.agent/workflows/`：API 驱动 LLM（google-genai SDK），17 个工作流定义分析 SOP |
 | **Memory（记忆层）** | 知识沉淀与归档 | `Memory_Layer/`、`Reports/`、`Config/`：知识卡片、按日/类型归档的报告、组合配置 |
 
-**双模 LLM**：自动检测运行环境——桌面有 IDE CLI（claude/codex）走 desktop 模式；VPS/Bot 有 `GEMINI_API_KEY` 走 vps 模式。可用 `LLM_MODE` 强制覆盖。
+**API 驱动 LLM**：统一通过 google-genai SDK 调用 Gemini API，需配置 `GEMINI_API_KEY`（可选 `GEMINI_API_KEY_BACKUP` 自动回退）。
 
 **模型对齐**：`/deep` 与 `/value` 使用 **gemini-3.1-pro**（深度调研）；其余所有命令使用 **gemini-3-flash**（兼顾速度与成本）。
 
@@ -40,9 +40,9 @@
 ```
 ┌──────────────────────────────────────────────────────────┐
 │            用户入口 (Entry Points)                          │
-│   IDE 对话/命令  │  Telegram Bot  │  CLI (research_cli.py)  │
-└──────────┬───────────────┬────────────────┬───────────────┘
-           ▼               ▼                ▼
+│        Telegram Bot      │     CLI (research_cli.py)        │
+└─────────────────┬────────────────────┬────────────────────┘
+                  ▼                    ▼
 ┌──────────────────────────────────────────────────────────┐
 │  Eyes — 数据采集                                            │
 │  RSS │ yfinance │ tushare │ Tavily │ Brave │ opencli │ 社交  │
@@ -51,7 +51,7 @@
                            ▼
 ┌──────────────────────────────────────────────────────────┐
 │  Brain — LLM 处理                                           │
-│  desktop: IDE Agent      │  vps: google-genai SDK          │
+│  google-genai SDK (Gemini API)                             │
 │  17 个 Workflow SOP  +  ToolBus 工具注册 + 证据追踪          │
 └──────────────────────────┬───────────────────────────────┘
                            ▼
@@ -162,7 +162,6 @@ python research_cli.py value MCO               # 质量复利分析
 python research_cli.py buy NVDA                # 买入审计
 python research_cli.py sell NVDA               # 卖出审计
 python research_cli.py position                # 持仓体检
-python research_cli.py --llm-mode vps scan     # 强制 VPS 模式
 ```
 
 ### 后台服务
@@ -187,18 +186,29 @@ python -m pytest tests/test_execution.py -v     # 详细输出
 
 ## 配置说明
 
-`.env`（位于 `research/`）：
+`.env`（位于 `research/`）—— 可直接复制模板起步：`cp .env.example .env`，按需填值。
+
+完整变量见 `.env.example`，核心如下：
 
 | 变量 | 必填 | 说明 |
 |:---|:---:|:---|
-| `GEMINI_API_KEY` | ✅ | VPS 模式 LLM |
+| `GEMINI_API_KEY` | ✅ | Gemini API LLM（主 Key）|
 | `TAVILY_API_KEY` | ✅ | 主力搜索引擎 |
+| `GEMINI_API_KEY_BACKUP` | | 备用 Key（主 Key 失败自动回退）|
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | | Telegram Bot |
 | `BRAVE_SEARCH_API_KEY` | | 备用搜索 |
 | `TUSHARE_TOKEN` | | A 股基本面/公告 |
 | `RSSHUB_BASE` | | 自建 RSSHub 地址 |
-| `LLM_MODE` | | `auto`（默认）/ `desktop` / `vps` |
 | `VPS_MODEL` / `VPS_MODEL_PRO` | | 覆盖默认 Flash / Pro 模型名 |
+
+**LLM Provider**：默认 `gemini`。可通过 `LLM_PROVIDER` 切换到 OpenAI 兼容接口（**支持纯文本对话与工具调用，工作流可正常运行**；需 `pip install openai`）：
+
+| 变量 | 适用 Provider | 说明 |
+|:---|:---|:---|
+| `LLM_PROVIDER` | 全部 | `gemini`（默认）/ `openai` / `openrouter` / `qwen` |
+| `OPENAI_API_KEY` / `OPENAI_MODEL` / `OPENAI_MODEL_PRO` | openai | 默认 `gpt-4o-mini` / `gpt-4o` |
+| `OPENROUTER_API_KEY` / `OPENROUTER_MODEL` / `OPENROUTER_MODEL_PRO` | openrouter | 默认 `openai/gpt-4o-mini` / `openai/gpt-4o` |
+| `QWEN_API_KEY`（或 `DASHSCOPE_API_KEY`）/ `QWEN_MODEL` / `QWEN_MODEL_PRO` | qwen | 默认 `qwen-plus` / `qwen-max` |
 
 个人数据文件（**均被 `.gitignore` 忽略**，仓库仅含 `*.example` 模板）：
 

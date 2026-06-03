@@ -10,12 +10,12 @@
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                   用户入口 (Entry Points)                │
-├──────────────┬──────────────┬────────────────────────────┤
-│  IDE Agent   │ Telegram Bot │  CLI (VPS)                 │
-│ (桌面模式)    │ (对话/命令)   │  python research_cli.py    │
-└──────┬───────┴──────┬───────┴─────────────┬──────────────┘
-       │              │                     │
-       ▼              ▼                     ▼
+├───────────────────────┬─────────────────────────────────┤
+│     Telegram Bot      │  CLI                            │
+│     (对话/命令)        │  python research_cli.py         │
+└───────────┬───────────┴───────────────┬─────────────────┘
+            │                           │
+            ▼                           ▼
 ┌─────────────────────────────────────────────────────────┐
 │              第一层：Eyes (信息获取)                      │
 │  RSS订阅 | yfinance | tushare | Tavily | Brave Search   │
@@ -24,8 +24,7 @@
                        ▼
 ┌─────────────────────────────────────────────────────────┐
 │              第二层：Brain (LLM 处理)                     │
-│  桌面: IDE Agent (Gemini 3 Flash)                       │
-│  VPS:  google-genai SDK (gemini-3.1-flash / 3.1-pro)    │
+│  google-genai SDK (gemini-3-flash / gemini-3.1-pro)     │
 │  Skills: V1 7命令 + Core P1-P15 + 工作流暗号            │
 └──────────────────────┬──────────────────────────────────┘
                        │
@@ -76,14 +75,17 @@
 
 ---
 
-## 3. LLM 双模式
+## 3. LLM 模式（API 驱动）
 
-| 环境 | 模式 | 调用方式 | 默认模型 |
-|:---|:---|:---|:---|
-| 桌面 IDE | desktop | IDE Agent 直接处理（claude/codex CLI） | 由 IDE 提供 |
-| VPS / Bot | vps | google-genai SDK | gemini-3-flash（常规）/ gemini-3.1-pro（`/deep`、`/value`） |
+系统统一通过 google-genai SDK 调用 Gemini API（不再有桌面 IDE 模式）：
 
-通过 `.env` 中 `LLM_MODE` 控制：`auto` (默认) / `desktop` / `vps`
+| 调用方式 | 默认模型 |
+|:---|:---|
+| google-genai SDK | gemini-3-flash（常规）/ gemini-3.1-pro（`/deep`、`/value`） |
+
+主/备 Key 通过 `.env` 中 `GEMINI_API_KEY` / `GEMINI_API_KEY_BACKUP` 配置；主 Key 失败自动回退备用 Key。
+
+**多 Provider**：`core/llm_providers.py` 支持 OpenAI 兼容接口（`openai` / `openrouter` / `qwen`），经 `LLM_PROVIDER` 切换。纯文本对话与工具调用（function calling，经手动工具循环驱动）均已接通，工作流可正常运行。详见 `README.md` 环境变量表。
 
 ---
 

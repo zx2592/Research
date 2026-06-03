@@ -74,7 +74,7 @@ def run_sentinel():
     send_telegram_message("\n".join(intro_lines))
     print(f"Detected {len(alerts)} alerts. Triggering agent analysis...")
 
-    agent = ResearchAgent(llm_mode="vps")
+    agent = ResearchAgent()
     for alert in alerts:
         print(f"Analyzing {alert['ticker']}...")
         prompt = (

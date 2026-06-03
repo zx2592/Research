@@ -11,12 +11,6 @@ from services.trigger import serve_trigger_loop
 def main() -> None:
     parser = argparse.ArgumentParser(description="Persistent Trigger Engine service")
     parser.add_argument(
-        "--executor",
-        choices=["auto", "desktop", "vps"],
-        default="auto",
-        help="Workflow executor mode for triggered actions.",
-    )
-    parser.add_argument(
         "--poll-seconds",
         type=int,
         default=60,
@@ -40,7 +34,6 @@ def main() -> None:
     args = parser.parse_args()
 
     serve_trigger_loop(
-        executor_mode=args.executor,
         poll_seconds=args.poll_seconds,
         disable_schedule=args.disable_schedule,
         disable_price=args.disable_price,

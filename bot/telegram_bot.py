@@ -45,7 +45,7 @@ if not TOKEN:
     raise SystemExit(1)
 
 print("Initializing Research Agent...")
-agent = ResearchAgent(llm_mode="vps")
+agent = ResearchAgent()
 print("Agent Ready.")
 
 # Rate limit tracker for unauthorized attempts
@@ -318,7 +318,7 @@ async def cmd_reset(update, context):
     if not await check_auth(update):
         return
     global agent
-    agent = ResearchAgent(llm_mode="vps")
+    agent = ResearchAgent()
     await update.message.reply_text("Session reset. Send a command to start again.")
 
 

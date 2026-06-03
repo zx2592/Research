@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
 """
-Unified LLM client for desktop and VPS modes.
+LLM client for API-driven (VPS) execution.
 
-Desktop mode delegates model execution to IDE providers (Claude Code, Codex,
-Gemini ADC) with automatic fallback to Gemini API if available.
-VPS mode talks to Gemini via google-genai.
+Talks to Gemini via google-genai with ordered primary/backup key retry.
 """
 
 import logging
 import os
-import shutil
 import sys
 
 from core import config  # noqa: F401 - ensures load_dotenv runs once
@@ -27,10 +24,10 @@ if sys.platform == "win32":
 
 
 class LLMClient:
-    """Unified LLM interface supporting desktop and VPS execution."""
+    """Gemini API client with primary/backup key routing."""
 
-    def __init__(self, force_mode=None):
-        self.mode = force_mode or self._detect_mode()
+    def __init__(self):
+        self.mode = "vps"
         self.client = None
         self.client_active = None
         self.chat_session = None
@@ -38,43 +35,29 @@ class LLMClient:
         self.active_api_label = None
         self.active_model = None
         self._chat_tools = None
+        self._oai = None
 
-        if self.mode == "vps":
+        # Provider selection: gemini (default, fully implemented) or a
+        # reserved OpenAI-compatible provider (openai / openrouter / qwen).
+        from core.llm_providers import resolve_provider
+
+        self.provider = resolve_provider()
+        if self.provider == "gemini":
             self._init_vps()
-        elif self.mode == "desktop":
-            self._init_desktop()
+        else:
+            self._init_openai_compatible()
 
-    def _detect_mode(self):
-        """Auto-detect execution mode.
+    def _init_openai_compatible(self):
+        """Initialise a reserved OpenAI-compatible provider."""
+        from core.llm_providers import OpenAICompatibleProvider
 
-        Priority:
-        1. LLM_MODE explicitly set to "desktop" or "vps" → use it
-        2. RUNNING_AS_BOT / RUNNING_AS_SENTINEL → vps
-        3. IDE CLI available (claude/codex on PATH) → desktop
-        4. Windows platform (no service markers) → desktop
-        5. Has GEMINI_API_KEY (non-Windows, no IDE CLI) → vps
-        6. Default → desktop
-        """
-        env_mode = os.getenv("LLM_MODE", "auto")
-        if env_mode in ("desktop", "vps"):
-            return env_mode
-
-        if os.getenv("RUNNING_AS_BOT") or os.getenv("RUNNING_AS_SENTINEL"):
-            return "vps"
-
-        if shutil.which("claude") or shutil.which("codex"):
-            return "desktop"
-
-        if sys.platform == "win32":
-            return "desktop"
-
-        if os.getenv("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY_BACKUP"):
-            return "vps"
-
-        return "desktop"
+        self._oai = OpenAICompatibleProvider(self.provider)
+        self.model_free = self._oai.model_free
+        self.model_pro = self._oai.model_pro
+        logger.info("LLM provider=%s (OpenAI-compatible, reserved)", self.provider)
 
     # ------------------------------------------------------------------
-    # VPS mode initialisation
+    # Initialisation
     # ------------------------------------------------------------------
 
     def _init_vps(self):
@@ -114,30 +97,6 @@ class LLMClient:
         return candidates
 
     # ------------------------------------------------------------------
-    # Desktop mode initialisation
-    # ------------------------------------------------------------------
-
-    def _init_desktop(self):
-        """Initialize desktop mode — detect IDE provider and prepare fallback."""
-        from core.ide_providers import detect_provider
-
-        self._ide_provider = detect_provider()
-        self._desktop_tools = None
-
-        # Prepare Gemini API fallback (lazy — only init on actual failure)
-        self._vps_fallback_ready = bool(
-            os.getenv("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY_BACKUP")
-        )
-
-        if self._ide_provider:
-            logger.info("Desktop mode: IDE provider=%s, fallback=%s",
-                        self._ide_provider.name,
-                        "ready" if self._vps_fallback_ready else "none")
-        else:
-            logger.info("Desktop mode: no IDE provider detected, fallback=%s",
-                        "ready" if self._vps_fallback_ready else "none")
-
-    # ------------------------------------------------------------------
     # Shared
     # ------------------------------------------------------------------
 
@@ -150,19 +109,20 @@ class LLMClient:
             logger.warning("System instruction file not found: %s", filepath)
 
     # ------------------------------------------------------------------
-    # create_chat — dispatch by mode
+    # create_chat
     # ------------------------------------------------------------------
 
     def create_chat(self, tools=None, use_pro=False, preferred_label=None):
-        """Create a fresh chat session."""
-        if self.mode == "vps":
-            return self._create_chat_vps(tools, use_pro, preferred_label)
-        if self.mode == "desktop":
-            return self._create_chat_desktop(tools, use_pro)
-        logger.warning("create_chat: unknown mode '%s'", self.mode)
+        """Create a fresh chat session (Gemini API, or reserved provider)."""
+        if self.provider != "gemini":
+            self._oai.create_session(
+                system_instruction=self.system_instruction,
+                tools=tools,
+                use_pro=use_pro,
+            )
+            self.active_model = self._oai.active_model
+            return None
 
-    def _create_chat_vps(self, tools, use_pro, preferred_label):
-        """Create a VPS-mode chat session via Gemini API."""
         model = self.model_pro if use_pro else self.model_free
         self._chat_tools = tools
 
@@ -197,44 +157,22 @@ class LLMClient:
 
         raise last_error or LLMConfigError("No Gemini API key available for chat creation")
 
-    def _create_chat_desktop(self, tools, use_pro):
-        """Create a desktop-mode chat session via IDE provider."""
-        self._desktop_tools = tools
-        if self._ide_provider:
-            try:
-                self._ide_provider.create_session(
-                    system_instruction=self.system_instruction,
-                    tools=tools,
-                    use_pro=use_pro,
-                )
-                logger.info(
-                    "Desktop session: provider=%s, tools=%d, pro=%s",
-                    self._ide_provider.name,
-                    len(tools) if tools else 0,
-                    use_pro,
-                )
-                return
-            except Exception as exc:
-                logger.warning("IDE provider %s init failed: %s", self._ide_provider.name, exc)
-        # IDE not available or failed — fallback deferred to chat()
-
     # ------------------------------------------------------------------
-    # chat — dispatch by mode
+    # chat
     # ------------------------------------------------------------------
 
     def chat(self, message, tools=None, use_pro=False):
         """Send a message and return text output."""
-        if self.mode == "vps":
-            return self._chat_vps(message, tools, use_pro)
-        if self.mode == "desktop":
-            return self._chat_desktop(message, tools, use_pro)
-        return f"[Error: Unknown mode '{self.mode}']"
+        if self.provider != "gemini":
+            try:
+                result_text = self._oai.chat(message, tools=tools, use_pro=use_pro)
+                return result_text or "⚠️ Agent 完成了任务但没有返回文本响应。"
+            except Exception as exc:
+                return f"Error: {str(exc)}"
 
-    def _chat_vps(self, message, tools, use_pro):
-        """Send a message via Gemini API (VPS mode)."""
         if not self.chat_session:
             try:
-                self._create_chat_vps(tools=tools, use_pro=use_pro, preferred_label=None)
+                self.create_chat(tools=tools, use_pro=use_pro, preferred_label=None)
             except Exception as exc:
                 return f"Error: {str(exc)}"
 
@@ -245,7 +183,7 @@ class LLMClient:
             if self.active_api_label == "primary" and self.api_key_backup:
                 logger.warning("Primary Gemini key failed, retrying with backup key: %s", exc)
                 try:
-                    self._create_chat_vps(
+                    self.create_chat(
                         tools=tools if tools is not None else self._chat_tools,
                         use_pro=use_pro,
                         preferred_label="backup",
@@ -257,37 +195,8 @@ class LLMClient:
 
             return f"Error: {str(exc)}"
 
-    def _chat_desktop(self, message, tools, use_pro):
-        """Send a message via IDE provider, with Gemini API fallback."""
-        # 1) Try IDE provider
-        if self._ide_provider:
-            try:
-                result = self._ide_provider.send_message(message)
-                if result:
-                    return result
-            except Exception as exc:
-                logger.warning("IDE provider failed: %s, falling back to Gemini API", exc)
-
-        # 2) Fallback: Gemini API (lazy init VPS components)
-        if self._vps_fallback_ready:
-            if not hasattr(self, "api_key"):
-                try:
-                    self._init_vps()
-                except LLMConfigError as exc:
-                    return f"[Error: IDE provider unavailable; Gemini fallback failed: {exc}]"
-
-            self.chat_session = None
-            effective_tools = tools or self._desktop_tools
-            try:
-                self._create_chat_vps(effective_tools, use_pro, None)
-                return self._chat_vps(message, tools, use_pro)
-            except Exception as exc:
-                return f"Error: IDE provider failed; Gemini fallback also failed: {exc}"
-
-        return "[Error: No IDE provider available and no Gemini API key for fallback]"
-
     # ------------------------------------------------------------------
-    # Internal helpers (VPS)
+    # Internal helpers
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -341,5 +250,5 @@ class LLMClient:
     def reset(self):
         """Reset the current chat session."""
         self.chat_session = None
-        if self.mode == "desktop" and hasattr(self, "_ide_provider") and self._ide_provider:
-            self._ide_provider.reset()
+        if self.provider != "gemini" and self._oai is not None:
+            self._oai.reset()

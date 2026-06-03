@@ -5,6 +5,77 @@
 
 ---
 
+## [V4.2] — 2026-06-03
+
+> **主题：多 Provider 接入 — OpenAI / OpenRouter / Qwen（含工具循环）(Multi-Provider with Tool Loop)**
+>
+> V4.2 在保持 Gemini 为默认实现的前提下，新增了 OpenAI 兼容接口支持。三家（OpenAI、OpenRouter、Qwen/DashScope）均为 OpenAI 兼容协议，共用一个适配器，仅 base_url / key / model 不同。**纯文本对话与工具调用（function calling）均已实现**——工具调用通过手动 JSON-schema 工具循环驱动，标准工作流（scan/deep/buy/...）可直接运行在这三家上。
+
+### 新增 Provider 模块
+- **新建** `core/llm_providers.py`：
+  - `resolve_provider()`：读取 `LLM_PROVIDER`（默认 `gemini`），大小写/空白容错
+  - `OPENAI_COMPATIBLE_PROVIDERS` 配置表：openai / openrouter / qwen 的 base_url、key 环境变量、默认模型
+  - `build_openai_tools()`：将 Python 可调用对象（ToolFactory 工具）转换为 OpenAI JSON-schema 工具定义 + name→callable 映射；自动跳过 `*args`/`**kwargs`，无默认值的参数标记为 required，无注解默认 string
+  - `OpenAICompatibleProvider`：懒加载 openai SDK，实现 `create_session` / `chat` / `reset`，含 `_run_tool_loop()`（请求 → tool_calls → 执行 → 回填结果 → 循环，复用 `settings.tool_loop.max_iterations`，达上限强制收尾）
+- **改造** `core/llm_client.py`：`__init__` 按 `provider` 路由——`gemini` 走原 google-genai 路径，其余走 `_init_openai_compatible()`；`create_chat` / `chat` / `reset` 增加 provider 分发
+
+### Provider 配置（均可经环境变量覆盖）
+| Provider | base_url | Key 环境变量 | 默认模型（free / pro）|
+|:---|:---|:---|:---|
+| openai | SDK 默认 | `OPENAI_API_KEY` | `gpt-4o-mini` / `gpt-4o` |
+| openrouter | `openrouter.ai/api/v1` | `OPENROUTER_API_KEY` | `openai/gpt-4o-mini` / `openai/gpt-4o` |
+| qwen | `dashscope.aliyuncs.com/compatible-mode/v1` | `QWEN_API_KEY` / `DASHSCOPE_API_KEY` | `qwen-plus` / `qwen-max` |
+
+### 工具循环要点
+- 工具复用 Gemini 同款 Python 可调用对象（ToolFactory），无需为各 Provider 重复定义
+- 未知工具名、参数 JSON 解析失败、工具执行抛异常 → 均以 `Error: ...` 文本回填，循环可自愈继续
+- 达到最大迭代轮数 → 记 warning 并发起一次无工具的收尾请求提取最终摘要
+
+### 边界说明
+- Gemini 为默认值，现有行为完全不变；切换 Provider 仅需设 `LLM_PROVIDER` + 对应 Key
+- OpenAI 兼容接口需安装 `openai` SDK（已在 requirements.txt）
+
+### 文档同步
+- `README.md`：新增"LLM Provider"环境变量小节；`SYSTEM.md` 第 3 节补多 Provider 说明
+
+### 测试
+- **新建** `tests/test_llm_providers.py`（21 项）：provider 解析、配置表、缺 Key 报错、模型默认/覆盖、Qwen 双 Key 回退、`build_openai_tools` schema 生成（变参跳过/required/无注解默认）、纯文本往返、reset、工具循环（执行+回填+收尾、未知工具、工具异常、最大迭代）、LLMClient provider 路由与工具循环
+- `tests/test_llm_client.py`：`_make_vps_client` 补 `provider="gemini"` 兼容新分发
+- 全量测试 **344 passed, 1 skipped**
+
+---
+
+## [V4.1] — 2026-06-03
+
+> **主题：架构精简 — 移除桌面 IDE 模式与触发器排队旁路 (API-Only Simplification)**
+>
+> V4.1 将系统的执行路径统一为纯 API 驱动。删除了为本地 IDE 环境设计的桌面模式（通过 claude/codex 子进程驱动）及其配套的触发器收件箱排队子系统。LLM 调用与触发器执行现在一律直连 Gemini API，结构更简单、行为更一致，同时清除了一批零消费者的死代码。
+
+### 移除桌面 LLM 模式（概念 A）
+- **删除** `core/ide_providers.py`（~625 行 IDE 子进程抽象层：ClaudeCode / Codex / GeminiADC 三个 Provider）
+- **重写** `core/llm_client.py`：移除 `_detect_mode` / `_init_desktop` / `_chat_desktop` 等全部 desktop 分支，`LLMClient` 恒走 google-genai SDK（保留主/备 Key 有序回退）。`LLMClient.__init__` 的 `force_mode` 参数彻底移除
+- `research_cli.py`：`ResearchAgent.__init__` 的 `llm_mode` 参数与 `--llm-mode` CLI 选项彻底移除
+
+### 移除触发器 desktop 排队旁路（概念 B）
+- **删除** `services/trigger/inbox.py`（402 行收件箱状态机）与 `services/trigger/ide_dialog_inbox.py`（393 行中文对话外壳，生产端零消费者）
+- **简化** `services/trigger/executor.py`：删除 `DesktopQueueWorkflowExecutor`，`build_workflow_executor()` 恒返回 `ResearchWorkflowExecutor`（API 直跑）
+- **简化** `services/trigger/monitor.py`：移除 `ide_inbox` 与 `executor_mode` 参数及排队渲染分支
+- `trigger_service.py` / `trigger_runner.py`：`--executor` CLI 选项彻底移除；`build_workflow_executor()` / `build_monitor_engine()` 不再接受 `mode` 参数
+
+### ⚠️ 行为变更
+- 触发器（定时 / 价格异动 / 财报临近）在**所有平台**统一直接调用 API 执行 workflow，不再于 Windows 上排队等待人工处理。后台 `trigger_service.py` 命中触发条件即真实消耗 token 并自动写报告
+
+### 文档同步
+- `SYSTEM.md` / `README.md`：架构图与模式说明由"双模式"更新为"API 驱动单模式"
+
+### 测试
+- 删除 `tests/test_ide_providers.py` 与 `tests/test_trigger_inbox_dialog.py`
+- 精简 `tests/test_llm_client.py`、`tests/test_model_routing.py`、`tests/test_trigger_engine.py`、`tests/test_concurrency.py` 中的 desktop / inbox 相关用例
+- `tests/test_trigger_monitor.py` 重写为 API 直跑路径验证
+- 全量测试 **323 passed, 1 skipped**
+
+---
+
 ## [V3.88] — 2026-04-03
 
 > **主题：浏览器自主化与核心持仓扫描 (Browser Autonomy & Core Pulse)**

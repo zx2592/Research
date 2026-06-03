@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import os
 from typing import Any, Protocol
 
-from .inbox import TriggerInboxService
 from .models import WorkflowInvocation
 
 
@@ -15,7 +13,7 @@ class WorkflowExecutor(Protocol):
 
 
 class ResearchWorkflowExecutor:
-    """Default executor backed by ResearchAgent."""
+    """Default executor backed by ResearchAgent (API-driven)."""
 
     def __init__(self, agent_factory=None):
         self._agent_factory = agent_factory
@@ -40,37 +38,11 @@ class ResearchWorkflowExecutor:
         )
 
 
-class DesktopQueueWorkflowExecutor:
-    """Desktop-safe executor that queues invocations for manual handling."""
+def build_workflow_executor() -> WorkflowExecutor:
+    """Build the API-driven workflow executor.
 
-    def __init__(self, queue_path: str = "data/trigger/desktop_queue.jsonl", inbox_service: TriggerInboxService | None = None):
-        self.queue_path = queue_path
-        self.inbox_service = inbox_service or TriggerInboxService(queue_path=queue_path)
-
-    def invoke(self, invocation: WorkflowInvocation) -> Any:
-        item = self.inbox_service.enqueue(invocation)
-        return {
-            "status": "queued",
-            "queue_path": self.queue_path,
-            "workflow": invocation.workflow,
-            "item_id": item["item_id"],
-        }
-
-
-def build_workflow_executor(mode: str = "auto") -> WorkflowExecutor:
-    """Build an executor for the requested environment mode."""
-    resolved_mode = mode
-    if resolved_mode == "auto":
-        resolved_mode = os.getenv("TRIGGER_EXECUTOR_MODE", "").strip().lower()
-    if not resolved_mode or resolved_mode == "auto":
-        llm_mode = os.getenv("LLM_MODE", "").strip().lower()
-        if llm_mode in ("desktop", "vps"):
-            resolved_mode = llm_mode
-        else:
-            # "auto" or unset: default to desktop on Windows, vps otherwise
-            resolved_mode = "desktop" if os.name == "nt" else "vps"
-    if resolved_mode == "desktop":
-        return DesktopQueueWorkflowExecutor()
-    if resolved_mode != "vps":
-        raise ValueError(f"Unsupported trigger executor mode: {resolved_mode}")
-    return ResearchWorkflowExecutor(agent_factory=lambda: __import__("research_cli").ResearchAgent(llm_mode="vps"))
+    Triggered workflows always run directly via ResearchAgent (Gemini API).
+    """
+    return ResearchWorkflowExecutor(
+        agent_factory=lambda: __import__("research_cli").ResearchAgent()
+    )

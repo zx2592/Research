@@ -9,7 +9,9 @@ import json
 import datetime
 import os
 
-TOKEN = '19c987d6bec43d74a9eac6e866caf15898cc5c044ed8d1698cf47c25'
+from core import config  # ensures .env is loaded when run standalone
+
+TOKEN = os.getenv("TUSHARE_TOKEN", "")
 AUM = 2000000
 TARGET_VOL = 0.20
 W_MAX = 0.10

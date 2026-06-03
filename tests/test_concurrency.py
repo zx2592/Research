@@ -257,31 +257,6 @@ class TestDedupeAtomicWrite:
         assert isinstance(store._lock, FileLock)
 
 
-# ---- TriggerInboxService atomic save (V3.9) ----
-
-from services.trigger.inbox import TriggerInboxService
-from services.trigger.models import WorkflowInvocation
-
-
-class TestInboxAtomicSave:
-    """V3.9: TriggerInboxService 原子写入。"""
-
-    def test_save_produces_valid_json(self, tmp_dir):
-        """enqueue 后 state 文件是合法 JSON。"""
-        queue_path = os.path.join(tmp_dir, "queue.jsonl")
-        state_path = os.path.join(tmp_dir, "state.json")
-        inbox = TriggerInboxService(queue_path=queue_path, state_path=state_path)
-        inv = WorkflowInvocation(
-            workflow="scan", ticker=None, reason="test",
-            dedupe_key="test:scan",
-        )
-        inbox.enqueue(inv)
-        with open(state_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        assert data["version"] == 1
-        assert len(data["items"]) == 1
-
-
 # ---- Bot _unauth_attempts bounded (V3.9) ----
 
 class TestUnauthAttemptsBounded:

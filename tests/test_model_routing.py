@@ -46,12 +46,12 @@ class TestRunWorkflowModelRouting:
 
     @pytest.fixture(autouse=True)
     def _patch_agent(self, monkeypatch):
-        monkeypatch.setenv("LLM_MODE", "desktop")
-        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        monkeypatch.delenv("LLM_MODE", raising=False)
+        monkeypatch.setenv("GEMINI_API_KEY", "fake-key-for-test")
         monkeypatch.delenv("GEMINI_API_KEY_BACKUP", raising=False)
 
     def _make_agent(self):
-        agent = ResearchAgent(llm_mode="desktop")
+        agent = ResearchAgent()
         agent.llm = MagicMock()
         agent.runner = MagicMock()
         agent.runner.build_system_instruction.return_value = "mock system instruction"
@@ -109,7 +109,7 @@ class TestCliDispatch:
     def test_optimize_dispatches_workflow(self, monkeypatch):
         agent = MagicMock()
         monkeypatch.setattr(research_cli, "ResearchAgent", MagicMock(return_value=agent))
-        monkeypatch.setattr(sys, "argv", ["research_cli.py", "optimize", "minvol", "--llm-mode", "desktop"])
+        monkeypatch.setattr(sys, "argv", ["research_cli.py", "optimize", "minvol"])
 
         research_cli.main()
 
@@ -123,7 +123,7 @@ class TestCliDispatch:
         agent = MagicMock()
         agent.run_workflow.return_value = "Report saved"
         monkeypatch.setattr(research_cli, "ResearchAgent", MagicMock(return_value=agent))
-        monkeypatch.setattr(sys, "argv", ["research_cli.py", "scan", "--llm-mode", "desktop"])
+        monkeypatch.setattr(sys, "argv", ["research_cli.py", "scan"])
 
         research_cli.main()
 
@@ -133,7 +133,7 @@ class TestCliDispatch:
         agent = MagicMock()
         agent.run_workflow.return_value = "Error: adapter failed"
         monkeypatch.setattr(research_cli, "ResearchAgent", MagicMock(return_value=agent))
-        monkeypatch.setattr(sys, "argv", ["research_cli.py", "scan", "--llm-mode", "desktop"])
+        monkeypatch.setattr(sys, "argv", ["research_cli.py", "scan"])
 
         with pytest.raises(SystemExit) as exc:
             research_cli.main()
@@ -152,7 +152,7 @@ class TestDefaultModelNames:
         try:
             from core.llm_client import LLMClient
 
-            LLMClient(force_mode="desktop")
+            LLMClient()
             default = os.getenv("VPS_MODEL", "gemini-3-flash-preview")
             assert default == "gemini-3-flash-preview"
         except Exception:

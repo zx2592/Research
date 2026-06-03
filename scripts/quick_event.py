@@ -127,7 +127,7 @@ def generate_quick_report(data, event, news_items, analyst_views, kb_ctx="", hol
     """Synthesize Quick Report with LLMClient."""
     from core.llm_client import LLMClient
     print("🧠 Generating Quick Analysis...")
-    client = LLMClient(force_mode="vps")
+    client = LLMClient()
     
     context = ""
     # Add YFinance News

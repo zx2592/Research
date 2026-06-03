@@ -123,7 +123,7 @@ class ResearchAgent:
 
     PRO_WORKFLOWS = frozenset({"deep", "value", "verify"})
 
-    def __init__(self, llm_mode: str | None = None):
+    def __init__(self):
         self.runner = WorkflowRunner(PROJECT_ROOT)
         self._chat_lock = threading.RLock()
 
@@ -149,9 +149,8 @@ class ResearchAgent:
         self.data_hub.register(BBBrowserSource())
         self.data_hub.register(OpenCLISource())
 
-        # --- LLM ---
-        force_mode = None if llm_mode in (None, "auto") else llm_mode
-        self.llm = LLMClient(force_mode=force_mode)
+        # --- LLM (API-driven: google-genai SDK) ---
+        self.llm = LLMClient()
         skill_path = os.path.join(PROJECT_ROOT, "Skills", "SKILL.md")
         self.llm.load_system_instruction(skill_path)
         self.llm.create_chat(tools=self._tools())
@@ -222,7 +221,6 @@ def main():
     parser = argparse.ArgumentParser(description="V3 Research System CLI")
     parser.add_argument("command", help="Command: scan, deep, quick, value, verify, add, insight, optimize, theme, push")
     parser.add_argument("args", nargs="*", help="Command arguments")
-    parser.add_argument("--llm-mode", choices=["auto", "desktop", "vps"], default="auto", help="Execution mode for ResearchAgent")
     args = parser.parse_args()
 
     command = args.command
@@ -237,7 +235,7 @@ def main():
         run_push(args.args or [])
         return
 
-    agent = ResearchAgent(llm_mode=args.llm_mode)
+    agent = ResearchAgent()
 
     # (workflow_name, ticker_or_None, task_prompt)
     ticker = cmd_args.split()[0].upper() if cmd_args else None
