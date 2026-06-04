@@ -46,7 +46,7 @@ from services.execution.guards import GuardChain, MaxPositionGuard, CooldownGuar
 from services.execution.kill_switch import KillSwitch
 from services.execution.adapters.paper import PaperAdapter
 from services.datahub.hub import DataHub
-from services.datahub.sources import BBBrowserSource, OpenCLISource
+from services.datahub.sources import BBBrowserSource, OpenCLISource, YFinanceSource
 
 
 # --- Network Time Utility ---
@@ -86,6 +86,22 @@ class WorkflowRunner:
             print(f"  Workflow not found: .agent/workflows/{name}.md")
         return content
 
+    def load_common_rules(self) -> str:
+        common_dir = os.path.join(self.root, ".agent", "workflows", "common")
+        if not os.path.isdir(common_dir):
+            return ""
+
+        parts = []
+        for filename in sorted(os.listdir(common_dir)):
+            if not filename.endswith(".md"):
+                continue
+            content = self._read(f".agent/workflows/common/{filename}")
+            if content:
+                parts.append(content)
+        if not parts:
+            return ""
+        return "\n\n---\n## Common Workflow Quality Rules\n" + "\n\n---\n".join(parts)
+
     def load_latest_rss(self) -> str:
         anchor_date = datetime.strptime(self._date_iso, "%Y-%m-%d")
         for delta in range(3):
@@ -99,7 +115,12 @@ class WorkflowRunner:
     def build_system_instruction(self, workflow_name: str) -> str:
         """Build the system instruction from workflow content and optional RSS context."""
         workflow = self.load_workflow(workflow_name)
-        parts = [workflow or f"[workflow not found: {workflow_name}]"]
+        common_rules = self.load_common_rules()
+        parts = []
+        if common_rules:
+            parts.append(common_rules)
+            parts.append("\n\n---\n## Workflow-Specific Instructions\n")
+        parts.append(workflow or f"[workflow not found: {workflow_name}]")
 
         # 注入真实日期（网络时间优先，避免 Windows 时钟偏移）
         parts.append(
@@ -121,7 +142,7 @@ class WorkflowRunner:
 class ResearchAgent:
     """Workflow-oriented research agent for CLI and bot entry points."""
 
-    PRO_WORKFLOWS = frozenset({"deep", "value", "verify"})
+    PRO_WORKFLOWS = frozenset({"deep", "value"})
 
     def __init__(self):
         self.runner = WorkflowRunner(PROJECT_ROOT)
@@ -148,6 +169,7 @@ class ResearchAgent:
         self.data_hub = DataHub()
         self.data_hub.register(BBBrowserSource())
         self.data_hub.register(OpenCLISource())
+        self.data_hub.register(YFinanceSource())
 
         # --- LLM (API-driven: google-genai SDK) ---
         self.llm = LLMClient()

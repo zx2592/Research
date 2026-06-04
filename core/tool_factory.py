@@ -8,10 +8,12 @@ import json
 import logging
 import os
 import subprocess
+from datetime import datetime, timezone
 from typing import Optional
 
 from core import settings
 from core.artifacts.schemas import OrderIntent
+from core.report_quality import ReportQualityChecker
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +31,7 @@ class ToolFactory:
         self.guard_chain = guard_chain
         self.execution_pipeline = execution_pipeline
         self.project_root = project_root
+        self.report_quality_checker = ReportQualityChecker()
 
     @staticmethod
     def _safe_resolve(base: str, user_path: str) -> str:
@@ -112,6 +115,15 @@ class ToolFactory:
         if ext.lower() not in self.SAFE_WRITE_EXTENSIONS:
             return f"[写入被拒绝: 不允许写入 {ext} 文件，仅支持 {', '.join(sorted(self.SAFE_WRITE_EXTENSIONS))}]"
         
+        if self._is_research_report_path(abs_path) and ext.lower() == ".md":
+            quality = self.report_quality_checker.check(
+                content,
+                prior_reports=self._load_related_reports(abs_path),
+            )
+            if not quality["passed"]:
+                self._record_report_write_status(abs_path, False, quality)
+                return "Report quality gate failed: " + json.dumps(quality, ensure_ascii=False)
+
         file_mode = "a" if mode == "a" else "w"
         action = "Appending to" if file_mode == "a" else "Saving to"
         success_action = "appended to" if file_mode == "a" else "saved to"
@@ -123,9 +135,64 @@ class ToolFactory:
                 os.makedirs(parent, exist_ok=True)
             with open(abs_path, file_mode, encoding="utf-8") as f:
                 f.write(content)
+            if self._is_research_report_path(abs_path) and ext.lower() == ".md":
+                self._record_report_write_status(abs_path, True, {"passed": True, "issues": []})
             return f"Successfully {success_action} {abs_path}"
         except Exception as e:
             return f"[File Error: {e}]"
+
+    def _is_research_report_path(self, abs_path: str) -> bool:
+        try:
+            rel = os.path.relpath(abs_path, self.project_root)
+        except ValueError:
+            return False
+        parts = rel.replace("\\", "/").split("/")
+        return len(parts) >= 2 and parts[0] == "Reports" and parts[1] != "Raw_Data"
+
+    def _load_related_reports(self, abs_path: str) -> list[dict]:
+        dirname = os.path.dirname(abs_path)
+        basename = os.path.basename(abs_path)
+        stem, ext = os.path.splitext(basename)
+        if ext.lower() != ".md":
+            return []
+
+        parts = stem.split("_")
+        if len(parts) < 3:
+            return []
+        ticker = parts[1]
+
+        reports = []
+        try:
+            for entry in sorted(os.listdir(dirname)):
+                entry_path = os.path.join(dirname, entry)
+                if entry_path == abs_path or not entry.endswith(".md"):
+                    continue
+                entry_parts = os.path.splitext(entry)[0].split("_")
+                if len(entry_parts) < 3 or entry_parts[1] != ticker:
+                    continue
+                try:
+                    with open(entry_path, "r", encoding="utf-8") as handle:
+                        reports.append({"path": entry, "content": handle.read()})
+                except OSError as exc:
+                    reports.append({"path": entry, "content": f"[read_error: {exc}]"})
+        except OSError:
+            return []
+        return reports
+
+    def _record_report_write_status(self, abs_path: str, passed: bool, quality: dict) -> None:
+        status_path = os.path.join(self.project_root, ".codex_runtime", "report_write_status.json")
+        payload = {
+            "path": abs_path,
+            "passed": passed,
+            "quality": quality,
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            os.makedirs(os.path.dirname(status_path), exist_ok=True)
+            with open(status_path, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False, indent=2)
+        except OSError:
+            logger.warning("Failed to record report write status: %s", status_path)
 
     def execute_python_script(self, script_path: str, args: str = "") -> str:
         """运行指定的 Python 脚本并返回输出。Run a python script."""
@@ -230,6 +297,89 @@ class ToolFactory:
             f"Web fallback query: {fallback_query}\n"
             f"{fallback_result}"
         )
+
+    def get_realtime_quote(self, ticker: str) -> str:
+        """Fetch a real-time quote for one ticker and return structured JSON."""
+        symbol = (ticker or "").strip().upper()
+        if not symbol:
+            return json.dumps({"error": "ticker is required"}, ensure_ascii=False)
+
+        metrics = self.data_mgr.fetch_market_prices(tickers={symbol: {"name": symbol, "type": "stock"}})
+        match = next((item for item in metrics if item.get("ticker", "").upper() == symbol), None)
+        if not match:
+            return json.dumps({
+                "ticker": symbol,
+                "price": None,
+                "error": "quote not found",
+                "source": "fetch_market_prices",
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
+            }, ensure_ascii=False)
+
+        payload = {
+            "ticker": symbol,
+            "name": match.get("name", symbol),
+            "price": match.get("price"),
+            "change_pct": match.get("change"),
+            "source": "fetch_market_prices",
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if "price_error" in match:
+            payload["price_error"] = match["price_error"]
+        return json.dumps(payload, ensure_ascii=False)
+
+    def cross_validate_price(self, ticker: str, tolerance_pct: float = 1.0) -> str:
+        """Cross-validate ticker price with at least two available real-time sources."""
+        symbol = (ticker or "").strip().upper()
+        if not symbol:
+            return json.dumps({"error": "ticker is required"}, ensure_ascii=False)
+
+        sources = []
+        primary = json.loads(self.get_realtime_quote(symbol))
+        if primary.get("price") is not None:
+            sources.append({
+                "source": primary.get("source", "fetch_market_prices"),
+                "price": float(primary["price"]),
+                "fetched_at": primary.get("fetched_at"),
+            })
+
+        if self._source_is_available("yfinance"):
+            try:
+                result = self.data_hub.fetch(source_name="yfinance", ticker=symbol, bypass_cache=True)
+                data = getattr(result, "data", {}) or {}
+                if data.get("price") is not None:
+                    sources.append({
+                        "source": f"yfinance:{data.get('source_method', 'datahub')}",
+                        "price": float(data["price"]),
+                        "fetched_at": data.get("fetched_at"),
+                    })
+            except Exception as exc:
+                sources.append({"source": "yfinance:datahub", "error": str(exc)})
+
+        numeric = [item for item in sources if item.get("price") is not None]
+        passed = False
+        spread_pct = None
+        if len(numeric) >= 2:
+            prices = [item["price"] for item in numeric]
+            midpoint = sum(prices) / len(prices)
+            if midpoint:
+                spread_pct = round((max(prices) - min(prices)) / midpoint * 100, 6)
+                passed = spread_pct <= float(tolerance_pct)
+
+        payload = {
+            "ticker": symbol,
+            "passed": passed,
+            "tolerance_pct": float(tolerance_pct),
+            "spread_pct": spread_pct,
+            "sources": sources,
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if len(numeric) < 2:
+            payload["error"] = "fewer than two price sources returned numeric prices"
+        return json.dumps(payload, ensure_ascii=False)
+
+    def check_report_quality(self, markdown: str) -> str:
+        """Validate a research report before saving; returns JSON gate result."""
+        return json.dumps(self.report_quality_checker.check(markdown), ensure_ascii=False)
 
     def get_portfolio_snapshot(self) -> str:
         """获取当前投资组合的所有持仓快照（含成本、股数、市值）。Get real-time portfolio holdings."""
@@ -375,6 +525,9 @@ class ToolFactory:
             self.read_file,
             self.list_dir,
             self.write_to_file,
+            self.get_realtime_quote,
+            self.cross_validate_price,
+            self.check_report_quality,
             self.get_portfolio_snapshot,
             self.preview_trade,
             self.execute_trade,
