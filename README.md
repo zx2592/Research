@@ -1,256 +1,382 @@
-# 🦅 AI Investment Research System (AlphaSystem)
+<div align="center">
 
-> **专家级 AI 投研工作台**
-> 整合自动化数据采集、LLM 驱动的标准化投研工作流（17 个 Slash 命令）、以及事件溯源的组合账本与执行风控，构建一套可审计、可复用的量化辅助投研系统。
+# AlphaSystem
 
----
+### 可审计、可复用的 AI 投资研究工作台
 
-## 目录
+将多源市场数据、LLM 驱动的研究 SOP、知识沉淀、组合账本与执行风控组织成一套完整的投研系统。
 
-- [核心理念](#核心理念)
-- [系统架构](#系统架构)
-- [快速开始](#快速开始)
-- [工作流命令大全（17 个）](#工作流命令大全17-个)
-- [使用方式](#使用方式)
-- [配置说明](#配置说明)
-- [项目结构](#项目结构)
-- [安全与隐私](#安全与隐私)
-- [鸣谢](#鸣谢)
+[快速开始](#快速开始) · [系统架构](#系统架构) · [研究工作流](#研究工作流) · [配置](#配置) · [路线图](#路线图) · [贡献](#贡献)
 
----
+</div>
 
-## 核心理念
+> [!IMPORTANT]
+> AlphaSystem 目前是面向个人研究与工程实验的项目，不构成投资建议，也不保证数据、模型输出或交易执行的准确性。涉及资金的操作必须由使用者独立核验并自行承担风险。
 
-系统采用 **Eyes – Brain – Memory** 三层仿生架构，模拟人类研究员"看 → 想 → 记"的信息处理流程：
+> [!NOTE]
+> 仓库当前未提供 `LICENSE` 文件。在许可证补充前，请不要默认将代码视为已获得标准开源授权。
 
-| 层 | 职责 | 实现 |
-|:---|:---|:---|
-| **Eyes（感知层）** | 统一数据采集与缓存 | `core/data_manager.py` + `services/datahub/`：yfinance、tushare、Tavily、Brave、RSS、opencli（80+ 站点适配器）、社交舆情抓取 |
-| **Brain（认知层）** | LLM 处理与工作流编排 | `core/llm_client.py` + `.agent/workflows/`：API 驱动 LLM（google-genai SDK），17 个工作流定义分析 SOP |
-| **Memory（记忆层）** | 知识沉淀与归档 | `Memory_Layer/`、`Reports/`、`Config/`：知识卡片、按日/类型归档的报告、组合配置 |
+## Why AlphaSystem
 
-**API 驱动 LLM**：统一通过 google-genai SDK 调用 Gemini API，需配置 `GEMINI_API_KEY`（可选 `GEMINI_API_KEY_BACKUP` 自动回退）。
+传统投研工具往往把数据采集、分析提示词、报告归档和交易记录分散在不同应用中。AlphaSystem 将这些环节收敛到一条可追踪的研究链路：
 
-**模型对齐**：`/deep` 与 `/value` 使用 **gemini-3.1-pro**（深度调研）；其余所有命令使用 **gemini-3-flash**（兼顾速度与成本）。
+- **从信号到结论**：统一接入行情、搜索、RSS、公告和社交信息，并通过缓存减少重复请求。
+- **从结论到证据**：17 个研究工作流把市场扫描、个股深研、事实核查、交易审计和组合复盘固化为可复用 SOP。
+- **从一次分析到长期记忆**：报告、知识卡片、持仓事件与组合快照保留研究上下文。
+- **从建议到受控执行**：可选执行管线在订单进入适配器前依次经过 KillSwitch、GuardChain 和 Wallet 审计。
+- **从单一模型到多 Provider**：默认支持 Gemini，也可切换到 OpenAI、OpenRouter 或 Qwen 的 OpenAI 兼容接口。
 
----
+## 核心能力
+
+| 能力 | 说明 |
+|:---|:---|
+| 多源数据接入 | DataHub 封装 yfinance、Tushare、Tavily、Brave、RSS、OpenBB、opencli、bb-browser 等数据源，并提供本地缓存 |
+| 标准化研究 | 17 个 Markdown 工作流定义市场发现、个股研究、交易审计、组合管理与复盘流程 |
+| LLM 工具调用 | Gemini 自动函数调用；OpenAI 兼容 Provider 通过手动 tool loop 使用同一组 Python 工具 |
+| 证据与产物 | ToolBus 管理工具预算与证据，结构化产物可写入报告和知识库 |
+| 组合账本 | 基于 SQLite 的事件溯源账本使用 `Decimal` 计算，可通过事件回放重建持仓状态 |
+| 主动触发 | 支持定时任务、价格异动和财报临近事件，并提供去重与冷却控制 |
+| 多入口 | CLI 覆盖全部研究工作流；Telegram Bot 提供常用命令与定时任务入口 |
+| 隐私隔离 | API Key、真实持仓、投资画像、报告和本地数据库默认由 `.gitignore` 排除 |
 
 ## 系统架构
 
-```
-┌──────────────────────────────────────────────────────────┐
-│            用户入口 (Entry Points)                          │
-│        Telegram Bot      │     CLI (research_cli.py)        │
-└─────────────────┬────────────────────┬────────────────────┘
-                  ▼                    ▼
-┌──────────────────────────────────────────────────────────┐
-│  Eyes — 数据采集                                            │
-│  RSS │ yfinance │ tushare │ Tavily │ Brave │ opencli │ 社交  │
-│  (DataHub 统一缓存，避免重复 API 调用)                       │
-└──────────────────────────┬───────────────────────────────┘
-                           ▼
-┌──────────────────────────────────────────────────────────┐
-│  Brain — LLM 处理                                           │
-│  google-genai SDK (Gemini API)                             │
-│  17 个 Workflow SOP  +  ToolBus 工具注册 + 证据追踪          │
-└──────────────────────────┬───────────────────────────────┘
-                           ▼
-┌──────────────────────────────────────────────────────────┐
-│  Memory — 知识归档                                          │
-│  Reports/ │ Knowledge_Base │ Config │ Obsidian (可选)       │
-└──────────────────────────────────────────────────────────┘
+AlphaSystem 使用 **Eyes – Brain – Memory** 三层架构，把“获取信息、形成判断、积累认知”拆成可替换的模块：
 
-附加子系统：
-• 执行管线 services/execution/  → KillSwitch → GuardChain → Wallet → Adapter → Ledger
-• 触发引擎 services/trigger/     → 价格异动 / 定时 / 财报临近 三类触发器
-• 组合账本 services/portfolio/   → SQLite 事件溯源，状态由回放计算（Decimal 精度）
+```text
+CLI / Telegram Bot / Scheduler
+              │
+              ▼
+┌─────────────────────────────────────────────────────────────┐
+│ Eyes · 感知层                                               │
+│ DataHub + Cache                                              │
+│ 行情 / 财务 / 搜索 / RSS / 公告 / 社交与浏览器数据          │
+└──────────────────────────────┬──────────────────────────────┘
+                               │ 标准化数据与证据
+                               ▼
+┌─────────────────────────────────────────────────────────────┐
+│ Brain · 认知层                                               │
+│ Workflow SOP + LLM Provider + ToolFactory / ToolBus          │
+│ 研究编排 / 模型路由 / 工具调用 / 预算控制 / 证据追踪         │
+└──────────────────────────────┬──────────────────────────────┘
+                               │ 报告、知识与事件
+                               ▼
+┌─────────────────────────────────────────────────────────────┐
+│ Memory · 记忆层                                              │
+│ Reports / Knowledge Base / Portfolio Ledger / Event Log      │
+│ 报告归档 / 知识卡片 / 持仓快照 / 可回放事件                 │
+└─────────────────────────────────────────────────────────────┘
 ```
 
----
+核心研究链路之外还有三个可选子系统：
+
+- **执行管线**（`services/execution/`）：`KillSwitch → GuardChain → Wallet → Adapter → Ledger`。CLI 默认装配 `PaperAdapter`，实盘适配器需要额外配置与独立验证。
+- **组合服务**（`services/portfolio/`）：SQLite 事件账本、CSV 导入、持仓快照与健康度计算。
+- **触发引擎**（`services/trigger/`）：将定时、价格异动和财报临近事件路由到研究工作流，并执行去重、冷却和通知。
 
 ## 快速开始
 
+### 1. 克隆仓库并创建虚拟环境
+
+需要 Python 3.10 或更高版本。
+
 ```bash
-# 1. 安装依赖
-pip install -r research/requirements.txt
+git clone https://github.com/zx2592/Research.git
+cd Research
 
-# 2. 配置环境变量（在 research/ 下新建 .env）
-#    必填: GEMINI_API_KEY, TAVILY_API_KEY
-#    选填: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, BRAVE_SEARCH_API_KEY, TUSHARE_TOKEN, RSSHUB_BASE
-
-# 3. （可选）准备个人配置——从示例模板复制后填入自己的数据
-cp research/Config/holdings.example.json research/Config/holdings.json
-cp research/Memory_Layer/Investment_Persona.example.md research/Memory_Layer/Investment_Persona.md
-#    ↑ 这两个真实文件已被 .gitignore 忽略，不会进入版本库
-
-# 4. 运行 CLI
-cd research
-python research_cli.py scan          # 市场扫描
-python research_cli.py deep NVDA     # 个股深度研究
+python3 -m venv .venv
+source .venv/bin/activate
 ```
 
-> **关于个人数据**：本仓库**不包含**任何真实持仓或投资偏好。`holdings.json`、`Investment_Persona.md`、券商导出 CSV 等均被 `.gitignore` 忽略。仓库仅提供 `*.example` 脱敏模板，供你按格式自行填写。
+Windows PowerShell：
 
----
+```powershell
+py -m venv .venv
+.venv\Scripts\Activate.ps1
+```
 
-## 工作流命令大全（17 个）
+### 2. 安装依赖
 
-> 所有命令均可通过 **IDE 斜杠命令**（如 `/scan`）、**Telegram Bot** 或 **CLI**（`python research_cli.py scan`）触发。
-> 报告归档规则：`/deep`、`/value` → `Reports/deepdive/`（深度沉淀）；其余 → `Reports/YYYYMMDD/`（按日归档）。
-> 所有输出使用中文（简体），Ticker 等专有名词保留英文。
+```bash
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
 
-### 📡 市场发现类
+需要 bb-browser / Playwright MCP 集成时，再安装 Node.js 依赖：
 
-| 命令 | 参数 | 模型 | 说明 |
-|:---|:---|:---|:---|
-| `/scan` | — | Flash | **市场全景扫描**：多源数据采集，识别四类信号（主题收敛 / 高影响异常 / 认知温差 / 深度基石），板块猎手深挖龙头与跨市场映射。 |
-| `/lead` | [关键词?] | Flash | **市场领航者**：穿越雪球、Reddit 与专业研报的全球情绪共振审计，强制 ≥60% 新鲜外部线索，输出领航报告。 |
-| `/theme` | — | Flash | **A股主题发现**：识别当前最强主题方向，构建逻辑链，筛选可交易标的。 |
-| `/core` | — | Flash | **核心持仓简报**：实时刷新核心持仓（读取本地 `holdings.json`）的报价、异动与逻辑稳固度。 |
+```bash
+npm install
+```
 
-### 🔍 个股研究类
+部分旧版抓取器及其测试还会用到未包含在基础依赖中的可选包：
 
-| 命令 | 参数 | 模型 | 说明 |
-|:---|:---|:---|:---|
-| `/deep` | Ticker | **Pro** | **个股深度研究**：三阶段——A) 商业模式+护城河+增长驱动 → B) 财务深度+盈利预测+动态PE+反向DCF → C) 多空压力测试+致命风险清单。 |
-| `/value` | Ticker | **Pro** | **质量复利分析**：Buffett / 李录 / 段永平 / 达尔文框架——10 年财务、护城河深度、企业文化、估值锚点，评估长期持有价值。 |
-| `/quick` | Ticker + Event | Flash | **事件快评**：信息分级（Class A/B）+ 边际变化（What/Why/Impact）+ 玩家扫描 + 长短双轨策略。 |
-| `/update` | Ticker | Flash | **公司情报刷新**：拉取最新财报/新闻/公告，校验投资逻辑，更新估值锚点。 |
-| `/verify` | Claim | Flash | **事实核查**：对传闻或论断做一手源搜索与交叉验证，给出 Confirmed / Falsified / Unverified 判决。 |
+```bash
+python -m pip install sec-edgar-downloader praw
+```
 
-### 🛒 交易决策类
+### 3. 配置环境变量
 
-| 命令 | 参数 | 模型 | 说明 |
-|:---|:---|:---|:---|
-| `/buy` | Ticker | Flash | **买入审计**：板块Beta熔断 + 股性Checklist + 策略定位 + 止损/目标/盈亏比 + 纪律合规 + FOMO 自检 → 🟢通过/🟡观望/🔴驳回。 |
-| `/sell` | Ticker | Flash | **卖出审计**：入场定性回溯 + 风格漂移检查 + 5 类卖出信号 + 4 种策略选项（止损/MoonBag/备兑/持有）+ 漂移自检。 |
-| `/option` | Ticker + 目标 | Flash | **期权策略**：Covered Call / Cash Secured Put / Protective Put 三场景，计算行权价、Delta、年化收益与盈亏场景。 |
-| `/macro` | Event | Flash | **宏观压力测试**：宏观事件对持仓/个股的冲击评估（贴现率敏感度 + 业务传导 + 避险属性），输出传导链与操作建议。 |
+```bash
+cp .env.example .env
+```
 
-### 📊 组合管理类
+编辑 `.env`，选择一个 LLM Provider 并填写对应 Key。默认 Provider 是 Gemini：
 
-| 命令 | 参数 | 模型 | 说明 |
-|:---|:---|:---|:---|
-| `/position` | — | Flash | **持仓体检**：量化绩效仪表盘（Sharpe/回撤/CAGR vs SPY）+ 收益归因 + 研究新鲜度 + 相关性矩阵 + 集中度风险 + 再平衡建议 + HTML Tearsheet。 |
-| `/optimize` | [method?] | Flash | **组合优化**：计算最优权重（maxdiv/minvol/maxsharpe/riskparity），生成具体调仓清单，含风控校验与定性审视。 |
+```dotenv
+LLM_PROVIDER=gemini
+GEMINI_API_KEY=your-gemini-api-key
+TAVILY_API_KEY=your-tavily-api-key
+```
 
-### 🔁 复盘 / 知识类
+`TAVILY_API_KEY` 用于依赖 Tavily 搜索的研究任务；若只使用其他数据源，可按工作流需要配置。Telegram、Brave、Tushare、RSSHub 等集成均为可选。
 
-| 命令 | 参数 | 模型 | 说明 |
-|:---|:---|:---|:---|
-| `/rethink` | Ticker | Flash | **交易复盘**：知行合一检查 + 运气vs实力区分 + SOP 漏洞诊断 → 0–10 纪律评分 + 核心教训 + 改进动作。 |
-| `/add` | — | Flash | **知识库留存**：提取当前研报核心洞察，生成知识卡片存入 `Memory_Layer/Knowledge_Base/`，可选同步 Obsidian。 |
+### 4. 准备个人配置（可选）
 
----
+```bash
+cp Config/holdings.example.json Config/holdings.json
+cp Memory_Layer/Investment_Persona.example.md Memory_Layer/Investment_Persona.md
+cp watchlist.json.example watchlist.json
+```
+
+这些真实文件已被 `.gitignore` 忽略。提交代码前仍应运行 `git status`，确认没有密钥、账户信息、持仓或研究报告进入暂存区。
+
+### 5. 查看 CLI 并运行第一个工作流
+
+```bash
+python research_cli.py --help
+python research_cli.py scan
+python research_cli.py deep NVDA
+```
+
+> `--help` 中的命令摘要尚未覆盖完整 dispatch 表；下方“研究工作流”列出了当前代码实际支持的 17 个研究命令。
 
 ## 使用方式
 
-三种入口，能力一致：
+### CLI
 
-| 入口 | 示例 |
-|:---|:---|
-| **IDE 对话/命令** | 直接输入 `/scan`、`/deep NVDA`、`/buy NVDA` |
-| **Telegram Bot** | 向 Bot 发送 `/scan`、`/position` 等命令 |
-| **命令行 CLI** | `python research_cli.py scan` / `deep NVDA` / `quick TSLA "Robotaxi 发布会"` |
+CLI 是覆盖最完整的入口。常用示例：
 
 ```bash
-# CLI 用法示例（在 research/ 目录下）
-python research_cli.py scan                    # 市场扫描
-python research_cli.py deep NVDA               # 深度研究
-python research_cli.py quick TSLA "财报超预期"  # 事件快评
-python research_cli.py value MCO               # 质量复利分析
-python research_cli.py buy NVDA                # 买入审计
-python research_cli.py sell NVDA               # 卖出审计
-python research_cli.py position                # 持仓体检
+python research_cli.py scan
+python research_cli.py deep NVDA
+python research_cli.py quick TSLA "Robotaxi 发布会"
+python research_cli.py verify "某公司将在下季度推出新产品"
+python research_cli.py buy NVDA
+python research_cli.py position
+python research_cli.py optimize riskparity
 ```
 
-### 后台服务
+CLI 还提供两个别名/辅助命令：
+
+- `insight`：调用 `scan` 工作流生成市场洞察；
+- `push [Ticker ...]`：运行纯 Python 信号推送，不启动 LLM。
+
+### Telegram Bot
+
+配置 `TELEGRAM_BOT_TOKEN` 和 `TELEGRAM_CHAT_ID` 后运行：
 
 ```bash
-python research/trigger_service.py                    # 触发引擎（默认 60s 轮询）
-python research/trigger_service.py --poll-seconds 120 # 自定义间隔
-python research/trigger_service.py --disable-price    # 关闭价格触发
-python research/bot/bot_service.py                    # Telegram Bot（自动重启）
+python bot/bot_service.py
 ```
 
-### 运行测试
+Bot 当前注册常用研究命令，以及 `/morning`、`/earnings`、`/weekly` 等自动化任务入口。具体命令以 `bot/telegram_bot.py` 的 handler 注册表为准。
+
+### 触发服务
 
 ```bash
-cd research
-python -m pytest tests/                         # 全部测试
-python -m pytest tests/test_portfolio_ledger.py # 单个文件
-python -m pytest tests/test_execution.py -v     # 详细输出
+python trigger_service.py
+python trigger_service.py --poll-seconds 120
+python trigger_service.py --disable-price
 ```
 
----
+触发服务会把事件转换为工作流调用；是否发送 Telegram 通知取决于本地配置。
 
-## 配置说明
+## 研究工作流
 
-`.env`（位于 `research/`）—— 可直接复制模板起步：`cp .env.example .env`，按需填值。
+`research_cli.py` 当前 dispatch 表覆盖以下 17 个用户工作流。
 
-完整变量见 `.env.example`，核心如下：
+### 市场发现
 
-| 变量 | 必填 | 说明 |
-|:---|:---:|:---|
-| `GEMINI_API_KEY` | ✅ | Gemini API LLM（主 Key）|
-| `TAVILY_API_KEY` | ✅ | 主力搜索引擎 |
-| `GEMINI_API_KEY_BACKUP` | | 备用 Key（主 Key 失败自动回退）|
-| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | | Telegram Bot |
-| `BRAVE_SEARCH_API_KEY` | | 备用搜索 |
-| `TUSHARE_TOKEN` | | A 股基本面/公告 |
-| `RSSHUB_BASE` | | 自建 RSSHub 地址 |
-| `VPS_MODEL` / `VPS_MODEL_PRO` | | 覆盖默认 Flash / Pro 模型名 |
-
-**LLM Provider**：默认 `gemini`。可通过 `LLM_PROVIDER` 切换到 OpenAI 兼容接口（**支持纯文本对话与工具调用，工作流可正常运行**；需 `pip install openai`）：
-
-| 变量 | 适用 Provider | 说明 |
+| 命令 | 参数 | 作用 |
 |:---|:---|:---|
-| `LLM_PROVIDER` | 全部 | `gemini`（默认）/ `openai` / `openrouter` / `qwen` |
-| `OPENAI_API_KEY` / `OPENAI_MODEL` / `OPENAI_MODEL_PRO` | openai | 默认 `gpt-4o-mini` / `gpt-4o` |
-| `OPENROUTER_API_KEY` / `OPENROUTER_MODEL` / `OPENROUTER_MODEL_PRO` | openrouter | 默认 `openai/gpt-4o-mini` / `openai/gpt-4o` |
-| `QWEN_API_KEY`（或 `DASHSCOPE_API_KEY`）/ `QWEN_MODEL` / `QWEN_MODEL_PRO` | qwen | 默认 `qwen-plus` / `qwen-max` |
+| `/scan` | — | 多源市场扫描，寻找主题收敛、异常与潜在线索 |
+| `/lead` | `[关键词]` | 审计全球社交与市场情绪共振 |
+| `/theme` | — | 发现 A 股主题方向并构建标的筛选逻辑 |
+| `/core` | — | 刷新核心持仓并检查逻辑变化 |
 
-个人数据文件（**均被 `.gitignore` 忽略**，仓库仅含 `*.example` 模板）：
+### 个股研究
 
-| 文件 | 模板 | 用途 |
+| 命令 | 参数 | 作用 |
 |:---|:---|:---|
-| `Config/holdings.json` | `Config/holdings.example.json` | 持仓明细（通常由 `parse_positions.py` 从券商导出生成） |
-| `Memory_Layer/Investment_Persona.md` | `Memory_Layer/Investment_Persona.example.md` | 个人投资框架与偏好 |
+| `/deep` | `Ticker` | 商业模式、财务、估值、多空压力测试与监控清单 |
+| `/value` | `Ticker` | 质量复利、护城河、文化与长期估值分析 |
+| `/quick` | `Ticker + Event` | 对事件或异动进行快速影响评估 |
+| `/update` | `Ticker` | 刷新公司财报、公告、新闻与投资逻辑 |
+| `/verify` | `Claim` | 使用一手来源与交叉验证核查论断 |
 
----
+### 交易决策
+
+| 命令 | 参数 | 作用 |
+|:---|:---|:---|
+| `/buy` | `Ticker` | 买入前的逻辑、赔率、纪律和 FOMO 审计 |
+| `/sell` | `Ticker` | 卖出信号、逻辑破缺与退出策略审计 |
+| `/option` | `Ticker + 目标` | Covered Call、Cash-Secured Put、Protective Put 场景分析 |
+| `/macro` | `[Event]` | 宏观事件对标的或组合的传导与压力测试 |
+
+### 组合与复盘
+
+| 命令 | 参数 | 作用 |
+|:---|:---|:---|
+| `/position` | — | 组合表现、集中度、相关性、研究新鲜度与再平衡体检 |
+| `/optimize` | `[method]` | 以 maxdiv、minvol、maxsharpe 或 riskparity 生成优化建议 |
+| `/rethink` | `[Ticker]` | 区分流程质量与运气，对交易进行复盘纠偏 |
+| `/add` | — | 从最近研究中提取知识卡片并写入本地知识库 |
+
+`/deep`、`/value` 和 `/verify` 在当前 CLI 路由中使用 Pro 模型，其余研究工作流使用常规模型。模型名称可以通过环境变量覆盖。
+
+## 配置
+
+完整模板见 [`.env.example`](.env.example)。配置值通过 `core/config.py` 读取，业务阈值集中在 `core/settings.py`。
+
+### LLM Provider
+
+| `LLM_PROVIDER` | Key | 默认常规模型 | 默认 Pro 模型 |
+|:---|:---|:---|:---|
+| `gemini` | `GEMINI_API_KEY` | `gemini-3-flash` | `gemini-3.1-pro` |
+| `openai` | `OPENAI_API_KEY` | `gpt-4o-mini` | `gpt-4o` |
+| `openrouter` | `OPENROUTER_API_KEY` | `openai/gpt-4o-mini` | `openai/gpt-4o` |
+| `qwen` | `QWEN_API_KEY` 或 `DASHSCOPE_API_KEY` | `qwen-plus` | `qwen-max` |
+
+Gemini 支持 `GEMINI_API_KEY_BACKUP` 回退。常规/Pro 模型分别可通过 Provider 对应的 `*_MODEL`、`*_MODEL_PRO` 变量覆盖；Gemini 使用 `VPS_MODEL` 和 `VPS_MODEL_PRO`。
+
+OpenAI、OpenRouter 与 Qwen 共用 `core/llm_providers.py` 中的 OpenAI 兼容适配器，支持纯文本对话与函数调用。`TOOL_LOOP_MAX_ITERATIONS` 控制工具循环上限，默认值为 15。
+
+### 数据源与可选集成
+
+| 来源 | 主要用途 | 配置或依赖 |
+|:---|:---|:---|
+| yfinance | 多市场行情与财务数据 | `yfinance` |
+| Tushare | A 股行情、基本面与公告 | `TUSHARE_TOKEN` |
+| Tavily | 研究型网页搜索 | `TAVILY_API_KEY` |
+| Brave | 备用网页搜索 | `BRAVE_SEARCH_API_KEY` |
+| RSS / RSSHub | 订阅与被动情报 | 可选 `RSSHUB_BASE` |
+| OpenBB | 标准化金融数据 | OpenBB Python 包或本地服务 |
+| opencli | 多站点命令行适配 | Node.js / 对应站点运行时 |
+| bb-browser | 浏览器与社交数据 | Playwright MCP / 本地浏览器环境 |
+| Kanzhiqiu | 社区摘要集成 | 本地 `integrations/kanzhiqiu/` 客户端 |
+
+DataHub 的 source 模块定义了这些适配器；实际 CLI 默认注册 bb-browser 与 opencli，其余来源由脚本、ToolFactory 或调用方按需启用。
 
 ## 项目结构
 
 ```text
-research/
-├── core/            # 核心模块：LLM 客户端、DataHub、ToolBus、配置中心、知识库
-├── services/        # 子系统：datahub / execution / portfolio / trigger
-├── bot/             # Telegram Bot 交互层
-├── integrations/    # bb-browser（社交抓取）、opencli（站点适配器）
-├── .agent/workflows/# 17 个工作流 SOP（Prompt 定义）
-├── Config/          # 配置（真实个人数据被忽略，仅留 *.example）
-├── Memory_Layer/    # 知识库、写作风格参考、工作流规则
-├── Reports/         # 研究报告归档（被忽略）
-├── Templates/       # 报告模板
-├── tests/           # pytest 测试套件
-└── research_cli.py  # CLI 指挥中枢（WorkflowRunner）
+Research/
+├── .agent/workflows/       # 17 个用户工作流 + 共享时间上下文
+├── core/                   # LLM、配置、工具、证据、产物与知识索引
+├── services/
+│   ├── datahub/            # 数据源抽象、适配器与缓存
+│   ├── execution/          # KillSwitch、GuardChain、Wallet 与执行适配器
+│   ├── portfolio/          # 事件账本、快照、导入器与组合健康度
+│   └── trigger/            # 事件模型、规则、去重、监控与执行
+├── bot/                    # Telegram Bot 与守护服务
+├── integrations/           # bb-browser、opencli、Kanzhiqiu 集成
+├── scripts/                # 扫描、提醒、报告、优化与同步脚本
+├── Memory_Layer/           # 投资画像模板、知识库与参考资料
+├── Templates/              # 研究报告模板
+├── tests/                  # pytest 测试
+├── research_cli.py         # CLI 入口与工作流 dispatch
+├── trigger_service.py      # 主动触发服务
+└── requirements.txt        # Python 基础依赖
 ```
 
+## 安全、隐私与执行边界
+
+- **密钥**：`.env` 已被忽略；不要把任何 API Key 写进代码、示例、日志或报告。
+- **个人数据**：真实持仓、投资画像、券商 CSV、报告、数据库和本地缓存默认不进入版本库。
+- **路径保护**：模型写文件工具限制扩展名并执行安全路径解析，但仍应审查模型生成的每个产物。
+- **证据边界**：工作流要求在数据不足时标注无法验证；LLM 输出仍可能包含错误，关键结论必须回到一手来源。
+- **执行保护**：KillSwitch、仓位上限、冷却期和反向交易冷却是代码级防线，不是资金安全保证。
+- **默认适配器**：CLI 当前装配 `PaperAdapter`。启用或开发实盘适配器前，请单独完成权限隔离、额度限制和券商沙盒测试。
+
+## 测试
+
+运行离线测试：
+
+```bash
+python -m pytest tests/ --ignore=tests/test_models.py
+```
+
+`tests/test_models.py` 是 Gemini 模型连通性脚本，会发起真实 API 请求，需要有效的 `GEMINI_API_KEY`：
+
+```bash
+GEMINI_API_KEY=your-key python tests/test_models.py
+```
+
+涉及旧版 SEC/Reddit 抓取器的测试还需要可选依赖：
+
+```bash
+python -m pip install sec-edgar-downloader praw
+```
+
+如果只修改核心模块，建议同时运行对应测试文件，例如：
+
+```bash
+python -m pytest tests/test_llm_client.py -v
+python -m pytest tests/test_datahub.py -v
+python -m pytest tests/test_portfolio_ledger.py -v
+python -m pytest tests/test_execution.py -v
+python -m pytest tests/test_trigger_engine.py -v
+```
+
+## 路线图
+
+项目已具备完整研究工作流、事件账本、执行保护链和主动触发主干。后续方向以现有路线图文档为准：
+
+- **Phase 7 · 主动智能**：继续完善异动监控、财报提醒、定时推送与事件反馈闭环。
+- **Phase 8 · 深度增强**：加强行业关联、情景分析、组合风险与研究质量评估。
+- **Phase 9 · Investment Copilot**：在严格审计与人工确认下，探索更完整的投资副驾驶体验。
+
+详见 [Development_Roadmap_Summary.md](Development_Roadmap_Summary.md) 与 [next phase.md](https://github.com/zx2592/Research/blob/main/next%20phase.md)。路线图表达方向，不代表交付承诺。
+
+## 贡献
+
+欢迎提交问题报告、文档改进、数据源适配器、工作流优化和测试增强。
+
+1. Fork 仓库并从 `main` 创建主题分支。
+2. 将改动限制在一个清晰问题内，不要提交个人配置、密钥、报告或数据库。
+3. 为行为变更补充或更新测试；文档改动需验证所有命令和相对链接。
+4. 运行相关测试并在 Pull Request 中说明未运行的联网/凭证测试。
+5. 提交 Pull Request，写明动机、实现边界、验证结果与潜在风险。
+
+建议使用清晰的提交信息，例如：
+
+```text
+feat: add a market data source
+fix: prevent duplicate trigger execution
+docs: improve provider setup
+test: cover portfolio event replay
+```
+
+在仓库补充正式许可证前，外部贡献的授权边界并不完整；维护者应优先明确许可证和贡献者条款。
+
+## 文档
+
+- [系统说明](SYSTEM.md) — 架构、命令体系、数据源与系统规则
+- [命令手册](COMMANDS.md) — 工作流参数与调用示例
+- [操作手册](System_Manual.md) — 更完整的安装、配置与运行说明
+- [Phase 7 指南](Phase7_Guide.md) — 主动触发与自动化能力
+- [macOS 部署指南](DEPLOY_MAC_V2.2.md) — macOS 环境部署参考
+- [版本历史](CHANGELOG.md) — 版本演进与行为变化
+- [演进路线图](Development_Roadmap_Summary.md) — Phase 7–9 规划
+
+## 致谢
+
+项目的方法论与架构受到以下公开项目启发：
+
+- [OpenAlice](https://github.com/OpenAlice-AI/OpenAlice) — 多 Agent 异步协作与认知调度。
+- [ValueCell](https://github.com/ValueCell) — 质量复利与自由现金流估值方法。
+- [TIB-OS 3.0](https://github.com/Evan-XYZ/tib-os-3.0) — 趋势中军与题材量化框架。
+
 ---
 
-## 安全与隐私
-
-- **零幻觉原则**：原始数据不足时必须明确标注"无法验证"，严禁捏造财务或持仓数据。
-- **个人数据隔离**：`.gitignore` 过滤所有真实持仓、投资偏好、券商导出、报告与本地配置；仓库仅含脱敏 `*.example` 模板。
-- **执行风控**：实盘前经过 KillSwitch → GuardChain（仓位上限 15% / 24h 冷却 / 反向 30d 冷却）→ Wallet 审计 → Adapter → Ledger 结算。
-- **历史卫生**：推送前须扫描全部 git 历史中的密钥与个人数据（`git log -p | grep -iE '(api_key|secret|token|password|sk-|账户号)'`）。
-
----
-
-## 鸣谢
-
-本项目在架构与方法论上参考借鉴了以下优秀的公开项目，特此鸣谢：
-
-- **[OpenAlice](https://github.com/OpenAlice-AI/OpenAlice)** — 多 Agent 异步投研协作架构与认知层调度的参考。
-- **[ValueCell](https://github.com/ValueCell)** — "质量复利"与"自由现金流贴现"方法论的启发。
-- **[TIB-OS 3.0](https://github.com/Evan-XYZ/tib-os-3.0)** — "趋势中军"方法论与多维题材量化打分逻辑的架构启发。
+如果 AlphaSystem 对你的研究流程有帮助，欢迎通过 Issue 或 Pull Request 分享使用反馈。
