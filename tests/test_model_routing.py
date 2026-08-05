@@ -16,7 +16,7 @@ class TestPROWorkflows:
     """Verify the PRO_WORKFLOWS set contains the right workflow names."""
 
     def test_pro_workflows_contains_expected(self):
-        expected = {"deep", "value", "verify"}
+        expected = {"deep", "value"}
         assert ResearchAgent.PRO_WORKFLOWS == expected
 
     def test_pro_workflows_excludes_flash(self):
@@ -36,6 +36,7 @@ class TestPROWorkflows:
             "theme",
             "core",
             "insight",
+            "verify",
         }
         for wf in flash_workflows:
             assert wf not in ResearchAgent.PRO_WORKFLOWS
@@ -69,11 +70,11 @@ class TestRunWorkflowModelRouting:
         _, kwargs = agent.llm.create_chat.call_args
         assert kwargs["use_pro"] is True
 
-    def test_verify_uses_pro(self):
+    def test_verify_uses_flash(self):
         agent = self._make_agent()
         agent.run_workflow("verify", "Verify the following claim: test")
         _, kwargs = agent.llm.create_chat.call_args
-        assert kwargs["use_pro"] is True
+        assert kwargs["use_pro"] is False
 
     def test_scan_uses_flash(self):
         agent = self._make_agent()
@@ -103,6 +104,25 @@ class TestWorkflowRunnerRssDate:
 
         assert "20260410" in result
         assert "anchored" in result
+
+    def test_build_system_instruction_injects_common_quality_rules(self, tmp_path, monkeypatch):
+        workflow_dir = tmp_path / ".agent" / "workflows"
+        common_dir = workflow_dir / "common"
+        common_dir.mkdir(parents=True)
+        (workflow_dir / "scan.md").write_text("SCAN WORKFLOW BODY", encoding="utf-8")
+        (common_dir / "00-report-contract.md").write_text("COMMON REPORT CONTRACT", encoding="utf-8")
+        (common_dir / "10-quality-gate.md").write_text("COMMON QUALITY GATE", encoding="utf-8")
+
+        monkeypatch.setattr(research_cli, "_get_network_date", lambda: ("20260411", "2026-04-11"))
+
+        runner = WorkflowRunner(str(tmp_path))
+
+        result = runner.build_system_instruction("scan")
+
+        assert "COMMON REPORT CONTRACT" in result
+        assert "COMMON QUALITY GATE" in result
+        assert "SCAN WORKFLOW BODY" in result
+        assert result.index("COMMON REPORT CONTRACT") < result.index("SCAN WORKFLOW BODY")
 
 
 class TestCliDispatch:
@@ -153,12 +173,12 @@ class TestDefaultModelNames:
             from core.llm_client import LLMClient
 
             LLMClient()
-            default = os.getenv("VPS_MODEL", "gemini-3-flash-preview")
-            assert default == "gemini-3-flash-preview"
+            default = os.getenv("VPS_MODEL", "gemini-3-flash")
+            assert default == "gemini-3-flash"
         except Exception:
             pytest.skip("Cannot test model defaults without google-genai")
 
     def test_pro_default_model(self, monkeypatch):
         monkeypatch.delenv("VPS_MODEL_PRO", raising=False)
-        default = os.getenv("VPS_MODEL_PRO", "gemini-3.1-pro-preview")
-        assert default == "gemini-3.1-pro-preview"
+        default = os.getenv("VPS_MODEL_PRO", "gemini-3.1-pro")
+        assert default == "gemini-3.1-pro"

@@ -57,6 +57,84 @@ class TestReadFile:
         result = factory.read_file("../../etc/passwd")
         assert "Access denied" in result
 
+    def test_report_write_is_blocked_when_quality_gate_fails(self, factory, tmp_path):
+        result = factory.write_to_file("Reports/20260604/thin.md", "thin report")
+
+        assert "Report quality gate failed" in result
+        assert not (tmp_path / "Reports" / "20260604" / "thin.md").exists()
+
+    def test_report_write_allows_quality_checked_report(self, factory, tmp_path):
+        report = """# NVDA Buy Audit
+
+## 结论先行
+结论：等待。置信度：中。
+
+## 实时数据快照
+- NVDA price: 100.0, source: yfinance, fetched_at: 2026-06-04T12:00:00Z
+
+## 证据台账
+| 判断 | 证据 | 来源 | 日期 |
+| --- | --- | --- | --- |
+| 估值偏高 | Forward PE 高于历史中位数 | source: test | 2026-06-04 |
+
+## Bull/Base/Bear
+- Bull: EPS 上修。
+- Base: 估值消化。
+- Bear: 增长放缓。
+
+## 行动计划
+等待回落到行动价后再评估。
+
+## 风险与不确定性
+- 数据源可能延迟。
+
+## 质量自检
+- 已检查来源、日期、反方观点和行动计划。
+"""
+        result = factory.write_to_file("Reports/20260604/good.md", report)
+
+        assert "Successfully saved" in result
+        assert (tmp_path / "Reports" / "20260604" / "good.md").exists()
+
+    def test_buy_report_conflicting_with_quick_requires_explanation(self, factory, tmp_path):
+        reports_dir = tmp_path / "Reports" / "20260604"
+        reports_dir.mkdir(parents=True)
+        quick = """# 20260604 中钨高新 Quick
+
+## 结论先行
+结论：逢低买入。钨价持续飙升，黑钨精矿连涨。
+
+## 实时数据快照
+- 000657.SZ price: 74.0, source: yfinance, fetched_at: 2026-06-04T12:00:00Z
+
+## 证据台账
+| 判断 | 证据 | 来源 | 日期 |
+| --- | --- | --- | --- |
+| 钨价方向 | 黑钨精矿连涨 | source: test | 2026-06-04 |
+
+## Bull/Base/Bear
+- Bull: 钨价继续上涨。
+- Base: 钨价震荡。
+- Bear: 钨价下跌。
+
+## 行动计划
+逢低买入。
+
+## 风险与不确定性
+- 数据源存在延迟。
+
+## 质量自检
+- 已检查。
+"""
+        (reports_dir / "20260604_000657.SZ_Quick.md").write_text(quick, encoding="utf-8")
+        buy = quick.replace("逢低买入。钨价持续飙升，黑钨精矿连涨。", "驳回。钨价腰斩下跌，黑钨精矿崩塌。")
+
+        result = factory.write_to_file("Reports/20260604/20260604_000657.SZ_Buy.md", buy)
+
+        assert "Report quality gate failed" in result
+        assert "unexplained_conflict_with_prior_report" in result
+        assert not (reports_dir / "20260604_000657.SZ_Buy.md").exists()
+
 
 class TestWriteFile:
     def test_write_file_safe_ext(self, factory, tmp_path):
@@ -185,6 +263,44 @@ class TestPortfolioSnapshot:
         assert data["positions"] == []
 
 
+class TestRealtimeMarketTools:
+    def test_get_realtime_quote_returns_structured_json(self, factory):
+        factory.data_mgr.fetch_market_prices.return_value = [
+            {"ticker": "NVDA", "name": "NVIDIA", "price": 100.0, "change": 2.5}
+        ]
+
+        result = factory.get_realtime_quote("nvda")
+        data = json.loads(result)
+
+        assert data["ticker"] == "NVDA"
+        assert data["price"] == 100.0
+        assert data["source"] == "fetch_market_prices"
+        assert "fetched_at" in data
+
+    def test_cross_validate_price_marks_consensus_when_sources_are_close(self, factory):
+        factory.data_mgr.fetch_market_prices.return_value = [
+            {"ticker": "NVDA", "price": 100.0, "change": 0.5}
+        ]
+        factory.data_hub._sources = {"yfinance": types.SimpleNamespace(available=True)}
+        factory.data_hub.fetch.return_value = types.SimpleNamespace(
+            data={"ticker": "NVDA", "price": 100.4, "source_method": "urllib_direct"}
+        )
+
+        result = factory.cross_validate_price("NVDA", tolerance_pct=1.0)
+        data = json.loads(result)
+
+        assert data["ticker"] == "NVDA"
+        assert data["passed"] is True
+        assert len(data["sources"]) == 2
+
+    def test_check_report_quality_exposes_gate_result(self, factory):
+        result = factory.check_report_quality("thin report")
+        data = json.loads(result)
+
+        assert data["passed"] is False
+        assert "missing_sections" in data
+
+
 # ---- 浏览器工具 ----
 
 class TestBrowserFetch:
@@ -218,10 +334,10 @@ class TestBrowserFetch:
 # ---- get_tools ----
 
 class TestGetTools:
-    def test_get_tools_returns_13(self, factory):
+    def test_get_tools_returns_16(self, factory):
         """get_tools 返回当前公开的 13 个工具函数。"""
         tools = factory.get_tools()
-        assert len(tools) == 13
+        assert len(tools) == 16
         # 所有条目都是 callable
         for tool in tools:
             assert callable(tool)
@@ -232,6 +348,7 @@ class TestGetTools:
         names = [t.__name__ if hasattr(t, '__name__') else t.__func__.__name__ for t in tools]
         expected = [
             "search_web", "read_file", "list_dir", "write_to_file",
+            "get_realtime_quote", "cross_validate_price", "check_report_quality",
             "get_portfolio_snapshot", "preview_trade", "execute_trade",
             "execute_python_script", "browser_fetch", "drill_source",
             "browser_operate", "system_doctor", "learn_source",
