@@ -18,6 +18,8 @@ description: Analyze a company using the "Quality Compounder" framework (Buffett
 
 // turbo-all
 
+> **契约**：本工作流的报告必须遵守注入在本文件之前的三份公共契约（报告结构 / 证据标准 / 质量门禁）。**财务与估值数字必须 ≥2 个独立来源交叉，并回溯到 T2 一手披露**（10-K / 年报 / IR）；复利分析要 5-10 年纵深，凭印象的长期数据一律不许写进结论。
+> **⚠️ 模型要求**：用最高智力档模型执行。
 
 1.  **Parse Arguments**:
     - Command: `/value [Ticker]` (e.g., `/value BRK.B` or `/value AAPL`)
@@ -51,7 +53,10 @@ description: Analyze a company using the "Quality Compounder" framework (Buffett
     - **Agentic Search**:
         - **Financials**: 10-year Revenue CAGR, ROIC/ROCE trends, Gross Margin stability, FCF Conversion.
         - **Capital Allocation**: Share buyback history (share count reduction), Dividend growth history.
-        - **Constraint**: Use **Calendar Year (CY)** where possible to ensure comparability.
+        - **Constraint**: Use **Calendar Year (CY)** where possible to ensure comparability（财年需标注映射，如 CY2026 ≈ FY27）。
+    - **取数顺序（守证据契约）**：先用 `browser_fetch` / `drill_source` 打开 10-K / 年报 / IR 页面拿结构化底稿，再用 `search_web` 补第二源与定性材料。**结构化不等于已交叉**——≥2 个独立来源仍是硬要求；两源不一致时并列写出并说明取舍。
+    - **联网取证一律走本项目工具**（`search_web` / `browser_fetch` / `drill_source` / `learn_source`），否则证据台账事后无从回溯。
+    - **价格取证**：`get_realtime_quote(ticker)` 取现价；**要给目标价或安全边际价时必须 `cross_validate_price(ticker)`**，结果写进结论区的价格证据行；单源未交叉则不给目标价与安全边际价。
 
 3.  **Mental Model Application (The "Masters" Framework)**:
     - **Warren Buffett**:
@@ -85,7 +90,16 @@ description: Analyze a company using the "Quality Compounder" framework (Buffett
 4.  **Synthesize Report (Quality Verdict)**:
     - **Format**: Based on `Workflow_Layer/Templates/Template_A_Quality_Compounder.md`.
     - **CRITICAL: The Report MUST be written in CHINESE (Simplified).**
-    - **Sections**:
+    - **Sections**（按公共报告契约的章节组织，专业模块嵌在其中）：
+        - **结论先行**：`Quality Score[如 A+ Compounder] · 评级 · 动作[买/等/继续研究] · 置信度[高/中/低] · 一句理由(≤30字)` + 相对上次档案的变化（无历史标「🆕首次质量评估」）+ **价格证据行**。
+        - **实时数据快照**：现价 / 涨跌幅 / 市值 / 52周区间，带来源、抓取时间、交叉验证结果。
+        - **证据台账**：护城河 / 资本配置 / 管理层 / 达尔文 四维关键判断逐条带证据、来源、时间、层级（T1/T2/T3），**必含一行反方 (Bear)**。
+        - **关键变化**：vs 上次档案（护城河 / 财务基线 / 估值 / 各维得分，⬆️⬇️↔️）。
+        - **数字底稿 (Key Financials)**：TTM + 5yr/10yr CAGR、ROIC/ROCE、毛利率、FCF 转化、Forward PE (CY26/CY27)、PEG、历史 PE 区间与当前分位——**每个数字带时间 + 来源层级**。
+        - **Bull/Base/Bear**：三情景 + 概率（合计 100%）+ 12M 目标价 + 触发条件。
+        - **行动计划**：可执行（仓位 % / 价格区间 / 时间窗）+ 买点 / 加仓 / 卖出 / 复盘触发器 + **看错信号** + 下次复盘点。
+        - **风险与不确定性**（含 `### 证据缺口`：`[缺什么] — [影响哪个判断] — [下一步去哪取]`）。
+        - **质量自检**：`check_report_quality` 结果 + 印章 `✅ 质量Gate 8/8`。
         - **0. Key Financials**: Table with TTM and 5yr CAGR.
         - **0.5 质量记分卡 (Quality Scorecard)**: 见下方加权评分表；最终质量等级（A+/B-...）须由此复合分推导，而非凭感觉。
         - **1. Darwinian Analysis**: Ecosystem position and survival trait.
@@ -109,7 +123,7 @@ description: Analyze a company using the "Quality Compounder" framework (Buffett
     - **Footer**: `**生成模型**: [IDE Agent] (gemini-3.1-pro-preview)`
 
 5.  **Output**:
-    - Save the report.
+    - **先 `check_report_quality(markdown)`**；`passed: false` 时按 `missing_sections` / `issues` 补齐后重跑，通过后再用 `write_to_file` 保存到 `Reports/deepdive/[YYYYMMDD]_[Ticker]_Value.md`（落盘是必须动作，严禁只回复不保存）。
     - Present the "Quality Score" in the final answer (e.g., "A+ Compounder" or "B- Cyclical Trap").
     - 在通知末尾附加：
       > 💡 **强烈建议**: 质量复利分析是知识库中最有价值的内容类型（护城河/10年财务基线难以再次收集）。建议立即执行 `/add` 将核心结论、关键财务锚点、护城河判断保存到知识库。

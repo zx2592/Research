@@ -1,6 +1,10 @@
 ---
-description: Verify a specific claim, news rumor, or data point using reliable sources (Template C).
+description: 事实核查 — 用可靠来源验证某条声明/传闻/数据点，给出 确认 / 证伪 / 存疑 判决
 ---
+
+// turbo-all
+
+> **契约**：本工作流的报告必须遵守注入在本文件之前的三份公共契约（报告结构 / 证据标准 / 质量门禁）。核查类工作流，**证据契约就是本工作流的核心**。
 
 ## ⚡ 高效执行指南 (High-Efficiency Execution)
 
@@ -8,41 +12,108 @@ description: Verify a specific claim, news rumor, or data point using reliable s
 > 1. **全员 Turbo：** 必须为所有 `run_command` 设置 `SafeToAutoRun: true`。
 > 2. **聚合任务：** 严禁分步询问或碎片化搜索。将情报采集、上下文读取、逻辑研判合并为连续动作流。
 > 3. **全量直达：** 除非涉及买卖金钱决策或风险极高操作，否则中途无需询问，直接产出最终报告。
-> 4. **深度不妥协 (No Quality Trade-off)：** 提高效率是为了减少确认弹窗，**绝不得以牺牲分析深度为代价**。报告必须严格遵循各 Phase 的维度要求，确保逻辑链条完整、数据交叉验证充分。
+> 4. **深度不妥协 (No Quality Trade-off)：** 提高效率是为了减少确认弹窗，**绝不得以牺牲取证严谨性为代价**。
 
 > **⚡ 终极零互动模式 (Ultimate Zero-Interaction):**
 > 为实现真正的一键产出，建议直接调用背景 CLI 执行完整生命周期：
 > `python research_cli.py [command] [args]` (设 SafeToAutoRun: true)
 
+## 解析参数
 
+- `/verify [声明/假设]`（如 `/verify iPhone 18 钛合金传闻`）
 
-// turbo-all
+---
 
+## Step 1: 定义核查目标
 
-1.  **Parse Arguments**:
-    - Command: `/verify [Subject/Hypothesis]` (e.g., `/verify iPhone 18 titanium rumor`)
+- **假设**：要验证的命题到底是什么——写成**可证伪的一句话**（含主体、动作、量级、时间窗）。
+- **期望判定**：确认 (Confirmed) / 证伪 (Falsified) / 存疑 (Unverified)。
+- **判定标准前置**：先写清「看到什么算确认、看到什么算证伪」，再去找证据，避免事后凑结论。
 
-2.  **Define Verification Objective**:
-    - **Hypothesis**: What exactly are we testing?
-    - **Desired Outcome**: Proven, Disproven, or Ambiguous.
+---
 
-3.  **Agentic Execution (Evidence Chain)**:
-    - **Search Strategy**:
-        - Step 1: Broad search for the claim.
-        - Step 2: Targeted search for *primary sources* (Company IR, Patent filings, Official statements).
-        - Step 3: Cross-reference with credible tier-1 media (Bloomberg, Reuters, WSJ).
+## Step 2: 证据链采集（守公共证据契约）
 
-4.  **Synthesize Findings (Template C)**:
-    - **Verdict**: [Confirmed / Falsified / Unverified]
-    - **CRITICAL: The Report MUST be written in CHINESE (Simplified).**
-    - **Evidence Chain**:
-        - Evidence 1: [Source Link] - [Quote]
-        - Evidence 2: [Source Link] - [Quote]
-    - **Implication**: Impact on the related stock/sector.
-    - **Confidence Score**: 1-10.
+按层级**逐级回溯**，不要停在媒体转述：
 
-5.  **Output（必须按顺序执行，不可跳过）**:
-    - **⚠️ 必须先保存再回复**：先调用 `write_to_file` 将完整核查报告写入 `Reports/[YYYYMMDD]/[YYYYMMDD]_[Subject]_Verify.md`，再在最终回答中展示摘要。**严禁只回复不保存。**
-    - **报告格式**：使用 Template C，包含：Verdict、Evidence Chain（含来源链接）、Implication、Confidence Score。
-    - **Footer**: `**生成模型**: [IDE Agent] (Gemini 2.5 Pro)`
-    - **后续**: 若事件重大，询问用户是否 `/add` 保存到知识库。
+1. **宽搜出处与传播链**：`search_web` 找这条声明最早出现在哪、被谁放大。
+2. **回溯一手 (T1)**：公司 IR / 官方公告、SEC 文件、专利、财报电话会原文、当事人原话。用 `browser_fetch` / `drill_source` 打开原文，不要只读摘要。
+3. **交叉验证**：≥2 个**独立**来源；与一线媒体（Bloomberg / Reuters / WSJ，T2-T3）对照。同一家通讯社被十家转发**不算交叉**。
+4. **分级标注**：一手公告 (T1) / 媒体事实报道 (T2) / 媒体解读与卖方观点 (T3) / 社媒传言 (T3，标「未证实」)。
+5. **涉及具体价格或财务数字**时：`get_realtime_quote` + `cross_validate_price`，并在结论区写价格证据行。
+
+> 找不到一手就如实写「未找到一手来源」，**严禁编造引用、链接或原话**。转述时必须标明来源层级。
+> 联网取证必须走本项目自己的工具，否则证据台账无从回溯。
+
+---
+
+## Step 3: 判定
+
+- **判定**：确认 / 证伪 / 存疑。
+- **置信度由证据层级决定**：有 T1（或 ≥2 个独立 T2）才可给「高」；只有 T3 → 最高「低」，判定只能是「存疑」。
+- **传导**：该结论对相关个股 / 板块意味着什么，是否改变已有的投资逻辑。
+
+---
+
+## 输出报告
+
+> 报告必须用中文（简体）撰写，Ticker 等专有名词保留英文。
+
+````markdown
+# [YYYYMMDD] [主题] 事实核查
+
+## 结论先行
+- **一行判决**：`判定[确认/证伪/存疑] · 动作[如何用于决策] · 置信度[高/中/低] · 一句理由(≤30字)`
+- **被核查的命题**：[可证伪的一句话]
+- **相对上次**：[与既有认知一致 / 推翻了什么 / 🆕首次]
+- **价格证据**：[若涉及价格数字，按公共契约二选一如实写；不涉及则写「本次核查不涉及价格」]
+
+## 实时数据快照
+
+[涉及行情/财务数字时填写：价格、涨跌幅、来源、抓取时间、交叉验证是否通过；不涉及则写明「本次核查为事实性命题，无行情输入」]
+
+## 证据台账（= 证据链）
+
+| 关键判断 | 证据原文/摘要 | 来源链接 | 时间 | 层级 | 对判定的影响 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| [支持项] | | | | T1/T2/T3 | 支持/削弱 |
+| [反证项] | | | | | |
+
+> **必含至少一行反证/反方**：能推翻本判定的最强证据是什么。
+
+## Bull/Base/Bear（判定情景）
+
+| 情景 | 概率 | 含义 | 触发条件 |
+| :--- | :--- | :--- | :--- |
+| Bull（命题成立且影响更大） | | | |
+| Base（当前判定） | | | |
+| Bear（命题被证伪 / 反向） | | | |
+
+## 行动计划
+
+- **基于判定的可执行动作**：[继续研究 / 触发 `/quick` / 触发 `/buy` 审计 / 不动]
+- **执行细节**：[时间窗、观察点]
+- **看错信号**：若后续出现 [X]，本判定作废，应 [动作]
+- **下次复盘点**：[日期 / 事件]
+
+## 风险与不确定性
+
+[哪些环节靠推断、哪些来源可能有立场、数据是否可能延迟]
+
+### 证据缺口
+
+- [缺什么一手] — [影响哪个判断] — [下一步去哪取]
+
+## 质量自检
+
+- `check_report_quality(markdown)` 结果：[passed]
+- ✅ 质量Gate 8/8（或 ⚠️ N/8，未过项见上）
+````
+
+---
+
+## 保存与通知（必须按顺序执行，不可跳过）
+
+1. **先 `check_report_quality(markdown)`**，通过后 **`write_to_file`** 写入 `Reports/YYYYMMDD/YYYYMMDD_[主题]_Verify.md`。**严禁只回复不保存。**
+2. 再在最终回答中展示判决 + 关键证据 + 置信度。
+3. 若事件重大，询问用户是否 `/add` 保存到知识库。

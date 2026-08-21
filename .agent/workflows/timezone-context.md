@@ -3,6 +3,8 @@ name: Time Zone Context
 description: Critical time zone and market hours context for this user to prevent "future date" errors
 ---
 
+> **契约例外（纯流程）**：本工作流产出的是**时间上下文片段**，不是决策报告——公共报告契约的八章节结构不适用。仍然适用的是：时间必须取网络校准时间，**不得凭训练记忆写日期**。
+
 ## ⚡ 高效执行指南 (High-Efficiency Execution)
 
 > **核心目标：** 极简互动，一令即达。
