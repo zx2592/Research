@@ -18,6 +18,7 @@ description: Add the active research report to the Knowledge Base (Knowledge Res
 
 // turbo-all
 
+> **契约例外（纯流程）**：本工作流的产出是**知识卡片**，不是决策报告——公共报告契约的八章节结构（结论先行 / 实时数据快照 / Bull-Base-Bear / …）**不适用**于卡片。仍然适用的是证据纪律：卡片里的每个数字带来源 + 日期，**严禁编造**，来源层级照标（T1/T2/T3）。
 
 ## 解析上下文
 
@@ -34,23 +35,29 @@ description: Add the active research report to the Knowledge Base (Knowledge Res
 
 | 字段 | 说明 |
 | :--- | :--- |
-| `ticker` | 股票代码（如 `MCO`）；行业/宏观类填 `N/A` |
+| `ticker` | 股票代码（如 `MCO`）；行业 / 宏观 / 主题类**留空**，改填 `title` |
+| `title` | 主题名（如「AI 电力缺口」）；个股卡可不填 |
 | `kb_category` | `Knowledge_Reserve` 或 `Trade_Records` |
 | `type` | `Company` / `Theme` / `Macro` / `Trade` |
 | `tags` | 3-5 个标签，包含：市场（美股/港股/A股）、行业、动作（买入/卖出/持仓） |
 | `linked_report` | 原始报告的相对路径 |
+
+> ⚠️ **`ticker` 与 `title` 至少要有一个**——没有它就没有演替链，同一标的/主题的历史卡片串不起来。
+> **不要再填 `N/A`**：那不是标的，会把所有行业卡和宏观卡压成同一条链，检索时全糊在一起。
+> 个股卡：填 `ticker`，`title` 留空；主题 / 宏观卡：`ticker` 留空，`title` 填主题名。文件名与索引关键词随之取 `ticker` 或 `title`。
 
 ---
 
 ## Step 2: 生成结构化卡片
 
 ### 2.1 知识储备类 (Knowledge Reserve)
-**文件命名**: `[Ticker_OR_主题]_[YYYYMMDD].md`
+**文件命名**: `[Ticker 或 主题名]_[YYYYMMDD].md`（个股用 `ticker`，主题/宏观用 `title`，**禁止出现 `N/A`**）
 **保存路径**: `Memory_Layer/Knowledge_Base/Knowledge_Reserve/`
 
 ```markdown
 ---
-ticker: [代码]
+ticker: [代码；主题/宏观卡留空]
+title: [主题名；个股卡留空]
 category: Knowledge_Reserve
 type: [Company | Theme | Macro]
 tags: [市场, 行业, 主题词]
@@ -124,11 +131,13 @@ linked_report: [相对路径]
   ```
   | [检索关键词] | [公司/主题/操作] | [行业/Side] | [YYYY-MM-DD] | [卡片路径] | [关联报告路径] |
   ```
+- **检索关键词取 `ticker` 或 `title`**，绝不写 `N/A`；同一 `ticker`/`title` 已有旧行时**追加新行**（保留演替链），不要覆盖旧行。
 - 更新文件顶部「**最后更新**: 」日期。
 
 ---
 
 ## Step 4: 通知
 
-- 确认卡片已创建，显示完整路径。
+- 确认卡片已创建，显示完整路径与索引新增行。
 - 展示卡片 YAML Front Matter。
+- 若 `ticker` 与 `title` 都取不到 → **停下来向用户确认**，不要用 `N/A` 或占位符硬写入库。
