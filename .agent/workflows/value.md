@@ -54,7 +54,8 @@ description: Analyze a company using the "Quality Compounder" framework (Buffett
         - **Financials**: 10-year Revenue CAGR, ROIC/ROCE trends, Gross Margin stability, FCF Conversion.
         - **Capital Allocation**: Share buyback history (share count reduction), Dividend growth history.
         - **Constraint**: Use **Calendar Year (CY)** where possible to ensure comparability（财年需标注映射，如 CY2026 ≈ FY27）。
-    - **取数顺序（守证据契约）**：先用 `browser_fetch` / `drill_source` 打开 10-K / 年报 / IR 页面拿结构化底稿，再用 `search_web` 补第二源与定性材料。**结构化不等于已交叉**——≥2 个独立来源仍是硬要求；两源不一致时并列写出并说明取舍。
+    - **取数顺序（守证据契约）**：A股先调 `get_financials(ticker)` 拿结构化年报；其余市场先用 `browser_fetch` / `drill_source` 打开 10-K / 年报 / IR 页面拿底稿，再用 `search_web` 补第二源与定性材料。**结构化不等于已交叉**——≥2 个**独立族**来源仍是硬要求，取到后用 `cross_validate_metric` 算误差（≤1% / 1-5% / >5% 三档）；两源不一致时并列写出并说明取舍。
+    - **复权口径**：10 年 CAGR、历史 PE 分位、历史 EPS 一律用**前复权**，同一份报告内不得混用；当前市值/PE 用当前股价×当前总股本，并用 `verify_market_cap` 验算股本口径。
     - **联网取证一律走本项目工具**（`search_web` / `browser_fetch` / `drill_source` / `learn_source`），否则证据台账事后无从回溯。
     - **价格取证**：`get_realtime_quote(ticker)` 取现价；**要给目标价或安全边际价时必须 `cross_validate_price(ticker)`**，结果写进结论区的价格证据行；单源未交叉则不给目标价与安全边际价。
 

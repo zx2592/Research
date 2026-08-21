@@ -46,7 +46,13 @@ from services.execution.guards import GuardChain, MaxPositionGuard, CooldownGuar
 from services.execution.kill_switch import KillSwitch
 from services.execution.adapters.paper import PaperAdapter
 from services.datahub.hub import DataHub
-from services.datahub.sources import BBBrowserSource, OpenCLISource, YFinanceSource
+from services.datahub.sources import (
+    BBBrowserSource,
+    EastmoneySource,
+    OpenCLISource,
+    TencentQuoteSource,
+    YFinanceSource,
+)
 
 
 # --- Network Time Utility ---
@@ -170,6 +176,10 @@ class ResearchAgent:
         self.data_hub.register(BBBrowserSource())
         self.data_hub.register(OpenCLISource())
         self.data_hub.register(YFinanceSource())
+        # 跨族第二来源：腾讯/东财属交易所转发族，与 Yahoo 一系互为独立来源，
+        # cross_validate_price 靠它们才可能真的「交叉」到
+        self.data_hub.register(TencentQuoteSource())
+        self.data_hub.register(EastmoneySource())
 
         # --- LLM (API-driven: google-genai SDK) ---
         self.llm = LLMClient()
