@@ -13,9 +13,36 @@ from typing import Optional
 
 from core import settings
 from core.artifacts.schemas import OrderIntent
+from core.price_consensus import build_consensus, family_of
+from core.price_consensus import verify_market_cap as _verify_market_cap
 from core.report_quality import ReportQualityChecker
 
 logger = logging.getLogger(__name__)
+
+# 分市场的财务数据来源优先级：主源 → 副源 → 一手披露。
+# 主副两源用于交叉验证，对不上时以一手披露为准。
+FINANCIAL_SOURCE_PRIORITY = {
+    "美股": {
+        "primary": "macrotrends.net/stocks/charts/{ticker}",
+        "secondary": "stockanalysis.com/stocks/{ticker}/financials",
+        "primary_disclosure": "SEC EDGAR 10-K / 10-Q 原文",
+    },
+    "港股": {
+        "primary": "aastocks.com 公司基本面",
+        "secondary": "macrotrends（用 ADR 代码，如 0700→TCEHY、9999→NTES）",
+        "primary_disclosure": "HKEX 披露易 hkexnews.hk 年报 PDF",
+    },
+    "A股": {
+        "primary": "东方财富结构化年报（get_financials 已直连）",
+        "secondary": "巨潮资讯 cninfo.com.cn 年报原文",
+        "primary_disclosure": "交易所公告 / 年报 PDF",
+    },
+    "台股": {
+        "primary": "FinMind api.finmindtrade.com",
+        "secondary": "Goodinfo goodinfo.tw",
+        "primary_disclosure": "公开资讯观测站 MOPS mops.twse.com.tw",
+    },
+}
 
 
 class ToolFactory:
@@ -327,8 +354,28 @@ class ToolFactory:
             payload["price_error"] = match["price_error"]
         return json.dumps(payload, ensure_ascii=False)
 
-    def cross_validate_price(self, ticker: str, tolerance_pct: float = 1.0) -> str:
-        """Cross-validate ticker price with at least two available real-time sources."""
+    # 取价来源：按「来源族」排布，同族再多也不构成交叉验证
+    PRICE_SOURCES = ("yfinance", "tencent", "eastmoney")
+
+    def cross_validate_price(
+        self,
+        ticker: str,
+        tolerance_pct: float = 1.0,
+        allow_identical: bool = False,
+    ) -> str:
+        """跨来源族交叉验证价格，返回可直接抄进报告的 `verdict` 一行。
+        Cross-validate a ticker price across INDEPENDENT source families.
+
+        `passed=True` 的条件是三个而不是一个：
+        1. 至少两个**不同来源族**给出数值（腾讯/东财/新浪同属交易所转发族，
+           互相比对不算交叉；Yahoo 一系属国际供应商族）；
+        2. 跨族偏差 ≤ tolerance_pct；
+        3. 跨族数值**不完全相同**——两个真正独立的来源几乎不可能分毫不差，
+           完全相同更可能是同一份数据的两个门面（allow_identical=True 可放行）。
+
+        未通过不是错误，是「未过项」：如实申报单源，报告照常写，
+        但不得给出目标价、止损与盈亏比。
+        """
         symbol = (ticker or "").strip().upper()
         if not symbol:
             return json.dumps({"error": "ticker is required"}, ensure_ascii=False)
@@ -342,40 +389,164 @@ class ToolFactory:
                 "fetched_at": primary.get("fetched_at"),
             })
 
-        if self._source_is_available("yfinance"):
+        for source_name in self.PRICE_SOURCES:
+            if not self._source_is_available(source_name):
+                continue
             try:
-                result = self.data_hub.fetch(source_name="yfinance", ticker=symbol, bypass_cache=True)
+                result = self.data_hub.fetch(source_name=source_name, ticker=symbol, bypass_cache=True)
                 data = getattr(result, "data", {}) or {}
                 if data.get("price") is not None:
+                    method = data.get("source_method", "datahub")
                     sources.append({
-                        "source": f"yfinance:{data.get('source_method', 'datahub')}",
+                        "source": f"{source_name}:{method}",
                         "price": float(data["price"]),
                         "fetched_at": data.get("fetched_at"),
                     })
+                elif data.get("error"):
+                    sources.append({"source": f"{source_name}:datahub", "error": data["error"]})
             except Exception as exc:
-                sources.append({"source": "yfinance:datahub", "error": str(exc)})
+                sources.append({"source": f"{source_name}:datahub", "error": str(exc)})
 
         numeric = [item for item in sources if item.get("price") is not None]
-        passed = False
+        consensus = build_consensus(
+            [
+                {"source": item["source"], "value": item["price"], "fetched_at": item.get("fetched_at")}
+                for item in numeric
+            ],
+            tolerance_pct=float(tolerance_pct),
+            label="价格",
+            allow_identical=allow_identical,
+        )
+
+        # 兼容旧字段：spread_pct 仍是极差口径
         spread_pct = None
         if len(numeric) >= 2:
             prices = [item["price"] for item in numeric]
             midpoint = sum(prices) / len(prices)
             if midpoint:
                 spread_pct = round((max(prices) - min(prices)) / midpoint * 100, 6)
-                passed = spread_pct <= float(tolerance_pct)
+
+        for item in sources:
+            item["family"] = family_of(item["source"])
 
         payload = {
             "ticker": symbol,
-            "passed": passed,
+            "passed": consensus["passed"],
+            "grade": consensus["grade"],
+            "reason": consensus["reason"],
+            "verdict": consensus["verdict"],
+            "consensus_price": consensus["consensus"],
             "tolerance_pct": float(tolerance_pct),
             "spread_pct": spread_pct,
+            "max_deviation_pct": consensus["max_deviation_pct"],
+            "independent_family_count": consensus["independent_family_count"],
+            "families": consensus["families"],
+            "identical_values": consensus["identical_values"],
             "sources": sources,
             "fetched_at": datetime.now(timezone.utc).isoformat(),
         }
         if len(numeric) < 2:
             payload["error"] = "fewer than two price sources returned numeric prices"
         return json.dumps(payload, ensure_ascii=False)
+
+    def cross_validate_metric(
+        self,
+        field: str,
+        values: str,
+        unit: str = "",
+        tolerance_pct: float = 1.0,
+    ) -> str:
+        """对同一个财务指标做多源交叉验证（营收 / 净利 / 毛利率 / 经营现金流…）。
+        Cross-validate one financial metric across sources.
+
+        values: JSON 字符串 `{"来源名": 数值, ...}`，例如
+            '{"东方财富": 1239, "巨潮年报": 1241, "stockanalysis": 1237}'
+
+        偏差分档：≤1% 一致取共识值；1~5% 标「存在差异」并注明两个数值与可能原因
+        （GAAP/Non-GAAP、汇率、财年定义、合并口径、更新滞后）；>5% 标「重大差异」，
+        必须回原始财报核实，不得直接使用。
+        """
+        try:
+            parsed = json.loads(values) if isinstance(values, str) else dict(values or {})
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            return json.dumps({"error": f"values 必须是 JSON 对象 {{来源: 数值}}: {exc}"}, ensure_ascii=False)
+
+        samples = [{"source": str(k), "value": v} for k, v in parsed.items()]
+        result = build_consensus(
+            samples,
+            tolerance_pct=float(tolerance_pct),
+            label=field or "指标",
+            unit=unit,
+        )
+        result["field"] = field
+        result["checked_at"] = datetime.now(timezone.utc).isoformat()
+        return json.dumps(result, ensure_ascii=False)
+
+    def verify_market_cap(
+        self,
+        price: float,
+        shares: float,
+        reported_cap: float,
+        currency: str = "",
+        tolerance_pct: float = 5.0,
+    ) -> str:
+        """验算市值 = 股价 × 总股本，与披露市值对照，偏差超容差即告警。
+        Verify reported market cap against price × shares outstanding.
+
+        增发、回购、库存股、ADR 存托比率都会让两者对不上——偏差超标是「回原始
+        披露核实股本口径」的信号，不是四舍五入误差。
+        """
+        result = _verify_market_cap(
+            price=price,
+            shares=shares,
+            reported_cap=reported_cap,
+            currency=currency,
+            tolerance_pct=float(tolerance_pct),
+        )
+        return json.dumps(result, ensure_ascii=False)
+
+    def get_financials(self, ticker: str, years: int = 5) -> str:
+        """获取结构化年度财务数据（A股走东方财富年报接口）。
+        Fetch structured annual financials; A-shares via Eastmoney, others return source guidance.
+
+        深度与估值研究里最容易出错的一步，就是从新闻正文里读营收/净利/现金流——
+        口径不明、时点不明，常常还是别人算过一手的数字。能走结构化接口就不要走
+        文本转述；接口覆盖不到的市场，本工具返回该市场的**来源优先级**，
+        再用 `browser_fetch` / `drill_source` 回原始披露取数。
+        """
+        symbol = (ticker or "").strip().upper()
+        if not symbol:
+            return json.dumps({"error": "ticker is required"}, ensure_ascii=False)
+
+        code = symbol.replace(".SH", "").replace(".SS", "").replace(".SZ", "").replace(".BJ", "")
+        is_a_share = code.isdigit() and len(code) == 6
+
+        if is_a_share and self._source_is_available("eastmoney"):
+            try:
+                result = self.data_hub.fetch(
+                    source_name="eastmoney",
+                    ticker=symbol,
+                    kind="financials",
+                    years=int(years),
+                    bypass_cache=True,
+                )
+                data = getattr(result, "data", {}) or {}
+                data.setdefault("ticker", symbol)
+                data["cross_validate_hint"] = (
+                    "关键数字请再用 cross_validate_metric 与巨潮年报原文对一遍；"
+                    "东方财富与其他行情站同属交易所转发族，互相比对不构成交叉。"
+                )
+                return json.dumps(data, ensure_ascii=False)
+            except Exception as exc:
+                logger.warning("[get_financials] eastmoney failed for %s: %s", symbol, exc)
+
+        return json.dumps({
+            "ticker": symbol,
+            "periods": [],
+            "structured_source": None,
+            "note": "本市场暂无结构化接口，按下表回原始披露取数，取到后用 cross_validate_metric 交叉",
+            "source_priority": FINANCIAL_SOURCE_PRIORITY,
+        }, ensure_ascii=False)
 
     def check_report_quality(self, markdown: str) -> str:
         """Validate a research report before saving; returns JSON gate result."""
@@ -527,6 +698,9 @@ class ToolFactory:
             self.write_to_file,
             self.get_realtime_quote,
             self.cross_validate_price,
+            self.cross_validate_metric,
+            self.verify_market_cap,
+            self.get_financials,
             self.check_report_quality,
             self.get_portfolio_snapshot,
             self.preview_trade,

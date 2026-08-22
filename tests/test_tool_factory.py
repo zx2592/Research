@@ -277,7 +277,8 @@ class TestRealtimeMarketTools:
         assert data["source"] == "fetch_market_prices"
         assert "fetched_at" in data
 
-    def test_cross_validate_price_marks_consensus_when_sources_are_close(self, factory):
+    def test_cross_validate_price_rejects_two_reads_of_the_same_family(self, factory):
+        """fetch_market_prices 与 yfinance 都走 Yahoo chart API，同族不算交叉。"""
         factory.data_mgr.fetch_market_prices.return_value = [
             {"ticker": "NVDA", "price": 100.0, "change": 0.5}
         ]
@@ -286,12 +287,117 @@ class TestRealtimeMarketTools:
             data={"ticker": "NVDA", "price": 100.4, "source_method": "urllib_direct"}
         )
 
-        result = factory.cross_validate_price("NVDA", tolerance_pct=1.0)
-        data = json.loads(result)
+        data = json.loads(factory.cross_validate_price("NVDA", tolerance_pct=1.0))
 
         assert data["ticker"] == "NVDA"
-        assert data["passed"] is True
+        assert data["passed"] is False
+        assert data["grade"] == "single_family"
+        assert data["independent_family_count"] == 1
         assert len(data["sources"]) == 2
+        assert "单源未交叉" in data["verdict"]
+
+    def test_cross_validate_price_passes_across_independent_families(self, factory):
+        factory.data_mgr.fetch_market_prices.return_value = [
+            {"ticker": "600519", "price": 1500.0, "change": 0.5}
+        ]
+        factory.data_hub._sources = {"tencent": types.SimpleNamespace(available=True)}
+        factory.data_hub.fetch.return_value = types.SimpleNamespace(
+            data={"ticker": "600519", "price": 1504.0, "source_method": "qt.gtimg.cn"}
+        )
+
+        data = json.loads(factory.cross_validate_price("600519", tolerance_pct=1.0))
+
+        assert data["passed"] is True
+        assert data["independent_family_count"] == 2
+        assert data["consensus_price"] == 1502.0
+        assert "已交叉" in data["verdict"]
+        assert data["spread_pct"] is not None   # 旧字段保持可读
+
+    def test_cross_validate_price_flags_identical_cross_family_values(self, factory):
+        factory.data_mgr.fetch_market_prices.return_value = [
+            {"ticker": "600519", "price": 1500.0, "change": 0.0}
+        ]
+        factory.data_hub._sources = {"tencent": types.SimpleNamespace(available=True)}
+        factory.data_hub.fetch.return_value = types.SimpleNamespace(
+            data={"ticker": "600519", "price": 1500.0, "source_method": "qt.gtimg.cn"}
+        )
+
+        data = json.loads(factory.cross_validate_price("600519"))
+
+        assert data["identical_values"] is True
+        assert data["passed"] is False
+        assert data["grade"] == "suspect_same_source"
+
+    def test_cross_validate_price_reports_single_numeric_source(self, factory):
+        factory.data_mgr.fetch_market_prices.return_value = [
+            {"ticker": "NVDA", "price": 100.0, "change": 0.5}
+        ]
+        factory.data_hub._sources = {}
+
+        data = json.loads(factory.cross_validate_price("NVDA"))
+
+        assert data["passed"] is False
+        assert data["error"] == "fewer than two price sources returned numeric prices"
+
+
+class TestMetricCrossValidation:
+    def test_cross_validate_metric_grades_and_returns_consensus(self, factory):
+        data = json.loads(factory.cross_validate_metric(
+            field="营收",
+            values='{"东方财富": 1239, "巨潮年报": 1241, "stockanalysis": 1237}',
+            unit="亿",
+        ))
+        assert data["field"] == "营收"
+        assert data["consensus"] == 1239
+        assert data["grade"] == "consistent"
+
+    def test_cross_validate_metric_flags_major_divergence(self, factory):
+        data = json.loads(factory.cross_validate_metric(
+            field="净利润",
+            values='{"GAAP": 245, "Non-GAAP": 400}',
+            unit="亿",
+        ))
+        assert data["grade"] == "major"
+        assert data["passed"] is False
+
+    def test_cross_validate_metric_rejects_malformed_values(self, factory):
+        data = json.loads(factory.cross_validate_metric(field="营收", values="not json"))
+        assert "error" in data
+
+
+class TestMarketCapVerification:
+    def test_verify_market_cap_passes_when_consistent(self, factory):
+        data = json.loads(factory.verify_market_cap(price=510, shares=9.11e9, reported_cap=510 * 9.11e9, currency="HKD"))
+        assert data["passed"] is True
+
+    def test_verify_market_cap_flags_share_count_mismatch(self, factory):
+        data = json.loads(factory.verify_market_cap(price=100, shares=1e9, reported_cap=2e11))
+        assert data["passed"] is False
+        assert data["deviation_pct"] == pytest.approx(50.0)
+
+
+class TestGetFinancials:
+    def test_a_share_uses_structured_eastmoney_feed(self, factory):
+        factory.data_hub._sources = {"eastmoney": types.SimpleNamespace(available=True)}
+        factory.data_hub.fetch.return_value = types.SimpleNamespace(
+            data={"ticker": "600519", "periods": [{"report_date": "2025-12-31", "revenue": 1.7e11}]}
+        )
+
+        data = json.loads(factory.get_financials("600519"))
+
+        assert data["periods"][0]["revenue"] == 1.7e11
+        assert "cross_validate_metric" in data["cross_validate_hint"]
+
+    def test_non_a_share_returns_source_priority_table(self, factory):
+        data = json.loads(factory.get_financials("NVDA"))
+
+        assert data["periods"] == []
+        assert data["structured_source"] is None
+        assert "美股" in data["source_priority"]
+        assert "SEC EDGAR" in data["source_priority"]["美股"]["primary_disclosure"]
+
+    def test_empty_ticker_is_rejected(self, factory):
+        assert "error" in json.loads(factory.get_financials("  "))
 
     def test_check_report_quality_exposes_gate_result(self, factory):
         result = factory.check_report_quality("thin report")
@@ -334,10 +440,10 @@ class TestBrowserFetch:
 # ---- get_tools ----
 
 class TestGetTools:
-    def test_get_tools_returns_16(self, factory):
-        """get_tools 返回当前公开的 13 个工具函数。"""
+    def test_get_tools_returns_19(self, factory):
+        """get_tools 返回当前公开的 19 个工具函数。"""
         tools = factory.get_tools()
-        assert len(tools) == 16
+        assert len(tools) == 19
         # 所有条目都是 callable
         for tool in tools:
             assert callable(tool)
@@ -348,7 +454,8 @@ class TestGetTools:
         names = [t.__name__ if hasattr(t, '__name__') else t.__func__.__name__ for t in tools]
         expected = [
             "search_web", "read_file", "list_dir", "write_to_file",
-            "get_realtime_quote", "cross_validate_price", "check_report_quality",
+            "get_realtime_quote", "cross_validate_price", "cross_validate_metric",
+            "verify_market_cap", "get_financials", "check_report_quality",
             "get_portfolio_snapshot", "preview_trade", "execute_trade",
             "execute_python_script", "browser_fetch", "drill_source",
             "browser_operate", "system_doctor", "learn_source",

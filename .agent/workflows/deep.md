@@ -111,7 +111,7 @@ description: 个股深度研究 — 商业模式、财务表现、增长逻辑�
 | **Tier 3 观点** | 二手解读 | 卖方研报、新闻分析、目标价汇总 | 可引用，但**不得作为唯一依据** |
 
 > 第三方聚合站是地板不是天花板——尽量回溯一手来源。找不到原话则转述并标注出处，**严禁编造引用**。
-> **取数顺序**：先用 `browser_fetch` / `drill_source` 打开 10-K / 10-Q / IR 页面等结构化披露拿底稿（收入、现金流、股本、净债务），再用 `search_web` 补一致预期与定性材料。**从新闻正文里读 OCF / FCF / ROIC 是数字出错的第一现场**——能回溯原始披露就不要停在文本转述。
+> **取数顺序**：A股先调 `get_financials(ticker)` 拿结构化年报底稿；其余市场先用 `browser_fetch` / `drill_source` 打开 10-K / 10-Q / IR 页面等结构化披露（收入、现金流、股本、净债务），再用 `search_web` 补一致预期与定性材料。两个来源都取到后，用 `cross_validate_metric(field, values, unit)` 算误差，按 ≤1% / 1-5% / >5% 三档如实写。**从新闻正文里读 OCF / FCF / ROIC 是数字出错的第一现场**——能回溯原始披露就不要停在文本转述。
 > **联网取证一律走本项目工具**（`search_web` / `browser_fetch` / `drill_source` / `learn_source`）：走别处取到的原文这里留不下记录，证据台账事后无从回溯，等于没有证据。
 
 ### B1. 财务深度分析
@@ -150,7 +150,8 @@ description: 个股深度研究 — 商业模式、财务表现、增长逻辑�
 1. `get_realtime_quote(ticker)` 取现价与抓取时间。
 2. **本工作流要给目标价与安全边际价 → 必须 `cross_validate_price(ticker)`**，把 `passed` / `spread_pct` / `sources` 如实写进结论区的价格证据行。
 3. `passed: false` 或 `fewer than two price sources` → 写「单源未交叉」，**本次不给目标价、安全边际价与盈亏比**，估值三角只给倍数与隐含增长率。
-4. `spread_pct` 恰好为 0 时先确认两源不是同一份行情的两个门面，确认不了按单源处理。
+4. `identical_values: true` 时先确认两源不是同一份行情的两个门面，确认不了按单源处理。
+5. 市值 / 股本口径用 `verify_market_cap(price, shares, reported_cap)` 验算一遍，偏差 >5% 先回原始披露核对增发、回购、库存股与 ADR 存托比率。
 
 ---
 
