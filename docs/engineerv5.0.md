@@ -4,6 +4,9 @@
 > **对照对象：** [anthropics/financial-services](https://github.com/anthropics/financial-services)（equity-research / financial-analysis 两个 vertical plugin + managed-agent cookbooks）、[anthropics/skills](https://github.com/anthropics/skills)（skill-creator 规范）
 > **本方基线：** `.agent/workflows/` 17 个生效工作流 + `common/` 三份契约 + `core/report_quality.py` 门禁 + `core/toolbus/`（未接线）
 > **优化目标：** 在「时间、LLM 调用成本、报告质量」三角中取最优，而非无脑加重流程。
+>
+> **落地状态（2026-08-23）：** 第一档 2.1–2.6 已全部实施并合入；第二档 2.8 已实施
+> （buy/sell 升 Pro）；2.7、2.9 待评估。逐项状态见文末「落地记录」。
 
 ---
 
@@ -116,6 +119,33 @@ Anthropic 把首次覆盖拆成 5 次强制独立调用（研究→建模→估�
 **建议执行顺序：** 2.3 → 2.2 → 2.1 → 2.5 → 2.4 →（观察一段时间）→ 2.9 → 2.7/2.8 → 2.6。前五项合计不增加任何 LLM 调用（其中两项净降成本），先把"免费的质量"拿满，再考虑花钱买质量的 2.7/2.8。
 
 ---
+
+## 落地记录
+
+| 项 | 状态 | 落地位置 |
+| :-- | :-- | :-- |
+| 2.1 门禁升级 | ✅ 已实施 | `core/report_quality.py` 分档阈值 + 9 类新校验；`core/tool_factory.py` 按文件名推断档位 |
+| 2.2 估值脚本化 | ✅ 已实施 | `scripts/valuation_math.py`；`deep/value/buy` 三个 workflow 强制调用 |
+| 2.3 预算接线 | ✅ 已实施 | `settings.WorkflowBudgetSettings` 单一真理源；ToolFactory 工具层软门；WorkflowRunner 注入提示词 |
+| 2.4 数据纪律 | ✅ 已实施 | `common/10-evidence-contract.md` 时效四步 + 缺失写法表 + 溯源即时化 |
+| 2.5 分档表 + NO SHORTCUTS | ✅ 已实施 | `common/00-report-contract.md` |
+| 2.6 双源合并 | ✅ 已实施 | `Skills/SKILL.md` 修复 4 个坏链接，标明与 `.agent/workflows/` 的主从关系 |
+| 2.7 深研两阶段 + critique | ⏸ 待评估 | 需先观察分档门禁生效后 `/deep` 的实际通过率再决定 |
+| 2.8 buy/sell 升 Pro | ✅ 已实施 | `settings.ModelRoutingSettings`，可用 `PRO_WORKFLOWS` 环境变量覆盖 |
+| 2.9 workflow 瘦身分层 | ⏸ 待评估 | 改动面最大，建议独立一轮做 |
+
+**附带修掉的既有缺陷（评审时发现，非清单内）**
+
+- `write_to_file(mode='a')` 对片段单独送检，必然失败——等于禁止分段写入。
+  改为校验「已有内容 + 追加内容」的最终文件状态，并移除 `Skills/SKILL.md` 里
+  会把人引向该陷阱的分段写入指引。
+- `common/20-quality-gate.md` 此前列出的 `report_date` / `evidence_table` /
+  `ticker_match` / `live_tooling` / `price_provenance` 五项门禁在代码中并不存在。
+  本轮把其中四项真正实现，并把该文档重写为「代码实际执行的门禁」表。
+
+**验证**：全量测试 474 passed。`tests/test_models.py`（需真实 API key）与
+`test_concurrency.py::test_bounded_at_max`（需 Telegram token）为环境相关的既有失败，
+改动前后一致。
 
 ## 附：本次评审引用的关键原文位置
 
