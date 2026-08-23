@@ -131,7 +131,9 @@ Anthropic 把首次覆盖拆成 5 次强制独立调用（研究→建模→估�
 | 2.6 双源合并 | ✅ 已实施 | `Skills/SKILL.md` 修复 4 个坏链接，标明与 `.agent/workflows/` 的主从关系 |
 | 2.7 深研分阶段 + critique | ✅ 已实施 | `settings.WorkflowStageSettings`；`stages/deep-1~2`、`value-1~2`、共用 `stages/critique.md` |
 | 2.8 buy/sell 升 Pro | ✅ 已实施 | `settings.ModelRoutingSettings`，可用 `PRO_WORKFLOWS` 环境变量覆盖 |
-| 2.9 workflow 瘦身分层 | ✅ 已实施 | `deep/value` 下沉到 `stages/`；`scan/buy` 报告骨架下沉到 `references/` |
+| 2.9 workflow 瘦身分层 | ✅ 已实施 | `deep/value` 下沉到 `stages/`；`scan/buy/position/sell/theme` 报告骨架下沉到 `references/` |
+| 第三档·估值 CSV 产物 | ✅ 已实施 | `valuation_math.py --csv-out`，`deep/value` 研究阶段落 `Reports/deepdive/models/*.csv` |
+| 第三档·EvidenceRecorder | ✅ 已实施 | ToolFactory 记录每次真实取证 + `get_evidence_log()` 工具；证据链随报告落盘 |
 
 **附带修掉的既有缺陷（评审时发现，非清单内）**
 
@@ -148,13 +150,29 @@ Anthropic 把首次覆盖拆成 5 次强制独立调用（研究→建模→估�
 | :-- | --: | :-- |
 | `/deep` | 23876 | 17034 / 14216 / 5884（三阶段） |
 | `/value` | 20800 | 14022 / 11200 / 5674（三阶段） |
-| `/scan` | 24699 | 20757 |
-| `/buy` | 20382 | 17181 |
+| `/scan` | 24699 | 21148 |
+| `/buy` | 20382 | 17572 |
+| `/position` | 19673 | 16818 |
+| `/sell` | 17869 | 15728 |
+| `/theme` | 17312 | 15572 |
 
 分阶段的收益不只是单次上下文变小：组装阶段不再继承研究阶段的工具调用历史，
 上下文从「一路累积」变成「只带交接说明」，中间产物走磁盘传递。
 
-**验证**：全量测试 518 passed。`tests/test_models.py`（需真实 API key）与
+**第二轮补做（评审时发现但未进清单的缺口）**
+
+- `EvidenceRecorder` 接线：ToolFactory 记录每一次真实取证，新增 `get_evidence_log()`
+  供模型据实填台账；证据链随报告落到 `evidence/` 目录。这同时把
+  `missing_live_tooling_evidence` 从「正文正则」（写下 `fetched_at` 就能骗过）
+  升级为「工具层事实裁决」。至此 `core/toolbus/` 不再有死代码。
+- `SYSTEM.md` 绝对规则第 4 条仍写死「最多 8 次搜索」，与逐 workflow 预算矛盾——
+  正是 2.3 声称已统一的那个问题，本轮才真正改掉。
+- `value-2-assemble` 引用的 `Workflow_Layer/Templates/...` 路径不存在（实际在 `Templates/`）。
+  这类断链第一版资产测试没覆盖，因为它只检查 `.agent/workflows/` 下的路径；
+  现已扩到全仓库路径，并补了一条「这条规则能抓到那次断链」的回归测试。
+- 估值脚本增加 `--csv-out`：假设、结论、敏感性落成 CSV，可复算、可逐季 diff。
+
+**验证**：全量测试 552 passed。`tests/test_models.py`（需真实 API key）与
 `test_concurrency.py::test_bounded_at_max`（需 Telegram token）为环境相关的既有失败，
 改动前后一致。
 

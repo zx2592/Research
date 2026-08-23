@@ -299,6 +299,55 @@ def analyze(args: argparse.Namespace) -> dict:
     return result
 
 
+def write_csv(result: dict, path: str) -> None:
+    """把估值结果落成 CSV。
+
+    Markdown 表格里的数字无法复算、无法 diff：下个季度重跑同一标的，
+    没人看得出哪个假设变了、变了多少。CSV 让「假设 → 结论」这条链可以逐行对比。
+    """
+    import csv
+    import os
+
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+
+    inputs = result["inputs"]
+    rows = [("section", "key", "value")]
+
+    for key, value in inputs.items():
+        rows.append(("input", key, value))
+
+    rows.append(("output", "implied_cagr", result["implied_growth"]["cagr"]))
+    for key, value in result["value_breakdown"].items():
+        rows.append(("output", key, value))
+
+    mos = result.get("margin_of_safety") or {}
+    for key, value in mos.items():
+        rows.append(("margin_of_safety", key, value))
+
+    fair = result.get("fair_value_at_assumed_growth") or {}
+    for key, value in fair.items():
+        rows.append(("fair_value", key, value))
+
+    sensitivity = result.get("sensitivity")
+    if sensitivity:
+        growth_steps = sensitivity["growth_steps"]
+        for row in sensitivity["rows"]:
+            for growth, value in zip(growth_steps, row["values"]):
+                rows.append((
+                    "sensitivity",
+                    f"r={row['discount_rate']};g={growth}",
+                    value,
+                ))
+
+    for check in result["checks"]:
+        rows.append(("check", f"{check['level']}:{check['check']}", check["message"]))
+
+    with open(path, "w", encoding="utf-8", newline="") as handle:
+        csv.writer(handle).writerows(rows)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="反向 DCF 与安全边际计算（确定性，供 /deep /value /buy 调用）"
@@ -314,6 +363,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--assumed-growth", type=float, default=None,
                         help="给定增长率时额外输出对应的合理价值")
     parser.add_argument("--no-sensitivity", action="store_true", help="不输出敏感性矩阵")
+    parser.add_argument("--csv-out", default="", metavar="PATH",
+                        help="同时把假设、结论与敏感性写成 CSV，便于复算与逐季 diff")
     return parser
 
 
@@ -346,6 +397,9 @@ def _normalize_argv(argv: list[str]) -> list[str]:
 def main() -> int:
     args = build_parser().parse_args(_normalize_argv(sys.argv[1:]))
     result = analyze(args)
+    if args.csv_out:
+        write_csv(result, args.csv_out)
+        result["csv_written_to"] = args.csv_out
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 1 if result["status"] == "fail" else 0
 

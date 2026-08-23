@@ -150,3 +150,56 @@ class TestCli:
     def test_missing_market_cap_and_price_is_rejected(self):
         proc = self._run("--fcf", "6e10")
         assert proc.returncode != 0
+
+
+class TestCsvExport:
+    """CSV 的意义是让「假设 → 结论」可以逐季 diff，Markdown 表格做不到。"""
+
+    def _run(self, tmp_path, *extra):
+        out = tmp_path / "model.csv"
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT),
+             "--market-cap", "3.2e12", "--shares", "2.44e10", "--fcf", "6e10",
+             "--csv-out", str(out), *extra],
+            capture_output=True, text=True,
+        )
+        return proc, out
+
+    def test_csv_is_written_and_reports_its_path(self, tmp_path):
+        proc, out = self._run(tmp_path)
+        assert proc.returncode == 0
+        assert out.is_file()
+        assert json.loads(proc.stdout)["csv_written_to"] == str(out)
+
+    def test_csv_carries_inputs_outputs_and_sensitivity(self, tmp_path):
+        _, out = self._run(tmp_path)
+        rows = [line.split(",") for line in out.read_text(encoding="utf-8").splitlines()]
+
+        assert rows[0] == ["section", "key", "value"]
+        sections = {r[0] for r in rows[1:]}
+        # 假设、结论、安全边际、敏感性、检查各成一段，缺哪一段都无法复算
+        assert {"input", "output", "margin_of_safety", "sensitivity"} <= sections
+
+        inputs = {r[1]: r[2] for r in rows[1:] if r[0] == "input"}
+        assert inputs["discount_rate"] == "0.1"
+        assert inputs["terminal_growth"] == "0.03"
+
+    def test_sensitivity_cells_are_labelled_by_assumption(self, tmp_path):
+        _, out = self._run(tmp_path)
+        keys = [
+            line.split(",")[1]
+            for line in out.read_text(encoding="utf-8").splitlines()
+            if line.startswith("sensitivity,")
+        ]
+        assert len(keys) == 25  # 5 折现率 × 5 增长率
+        assert all(k.startswith("r=") and ";g=" in k for k in keys)
+
+    def test_nested_output_directory_is_created(self, tmp_path):
+        out = tmp_path / "deepdive" / "models" / "nvda.csv"
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--market-cap", "3.2e12", "--fcf", "6e10",
+             "--no-sensitivity", "--csv-out", str(out)],
+            capture_output=True, text=True,
+        )
+        assert proc.returncode == 0
+        assert out.is_file()

@@ -155,7 +155,7 @@
 
   ```
   execute_python_script("scripts/valuation_math.py",
-    "--market-cap <市值> --shares <总股本> --fcf <基期自由现金流> --discount-rate 0.10 --terminal-growth 0.03 --years 10")
+    "--market-cap <市值> --shares <总股本> --fcf <基期自由现金流> --discount-rate 0.10 --terminal-growth 0.03 --years 10 --csv-out Reports/deepdive/models/[YYYYMMDD]_[Ticker]_model.csv")
   ```
 
   - 报告里的**隐含增长率、安全边际价、终值占比、敏感性矩阵一律抄脚本输出**，
@@ -166,6 +166,8 @@
     `implied_growth_plausible` 与 `terminal_value_share`），不得略过。
   - **脚本只做算术，判断仍归你**：「隐含增长率 32%」是算出来的，
     「32% 是否超过行业天花板、历史上同体量公司是否做到过」要你回答。
+  - `--csv-out` 会把假设、结论与敏感性矩阵落成 CSV。**这份 CSV 是可复算、可逐季 diff 的底稿**——
+    下个季度重跑同一标的时，能直接看出是哪个假设变了、变了多少，Markdown 表格做不到这点。
   - **判断**: 极度乐观(泡沫) / 合理定价 / 悲观错杀
 
 ### B4. 周期维度 (The Cycle)

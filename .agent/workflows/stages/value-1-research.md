@@ -21,6 +21,8 @@
 ```
 
 **估值脚本的 JSON 输出要原样贴进来**，阶段二直接引用，不必重跑。
+跑脚本时带上 `--csv-out Reports/deepdive/models/[YYYYMMDD]_[Ticker]_model.csv`，
+落一份可复算、可逐季 diff 的估值底稿。
 
 ## 交接说明（本阶段最后必须输出）
 
