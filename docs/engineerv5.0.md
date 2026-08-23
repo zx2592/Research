@@ -5,8 +5,7 @@
 > **本方基线：** `.agent/workflows/` 17 个生效工作流 + `common/` 三份契约 + `core/report_quality.py` 门禁 + `core/toolbus/`（未接线）
 > **优化目标：** 在「时间、LLM 调用成本、报告质量」三角中取最优，而非无脑加重流程。
 >
-> **落地状态（2026-08-23）：** 第一档 2.1–2.6 已全部实施并合入；第二档 2.8 已实施
-> （buy/sell 升 Pro）；2.7、2.9 待评估。逐项状态见文末「落地记录」。
+> **落地状态（2026-08-23）：** 2.1–2.9 全部实施并合入。逐项状态见文末「落地记录」。
 
 ---
 
@@ -130,9 +129,9 @@ Anthropic 把首次覆盖拆成 5 次强制独立调用（研究→建模→估�
 | 2.4 数据纪律 | ✅ 已实施 | `common/10-evidence-contract.md` 时效四步 + 缺失写法表 + 溯源即时化 |
 | 2.5 分档表 + NO SHORTCUTS | ✅ 已实施 | `common/00-report-contract.md` |
 | 2.6 双源合并 | ✅ 已实施 | `Skills/SKILL.md` 修复 4 个坏链接，标明与 `.agent/workflows/` 的主从关系 |
-| 2.7 深研两阶段 + critique | ⏸ 待评估 | 需先观察分档门禁生效后 `/deep` 的实际通过率再决定 |
+| 2.7 深研分阶段 + critique | ✅ 已实施 | `settings.WorkflowStageSettings`；`stages/deep-1~2`、`value-1~2`、共用 `stages/critique.md` |
 | 2.8 buy/sell 升 Pro | ✅ 已实施 | `settings.ModelRoutingSettings`，可用 `PRO_WORKFLOWS` 环境变量覆盖 |
-| 2.9 workflow 瘦身分层 | ⏸ 待评估 | 改动面最大，建议独立一轮做 |
+| 2.9 workflow 瘦身分层 | ✅ 已实施 | `deep/value` 下沉到 `stages/`；`scan/buy` 报告骨架下沉到 `references/` |
 
 **附带修掉的既有缺陷（评审时发现，非清单内）**
 
@@ -143,7 +142,19 @@ Anthropic 把首次覆盖拆成 5 次强制独立调用（研究→建模→估�
   `ticker_match` / `live_tooling` / `price_provenance` 五项门禁在代码中并不存在。
   本轮把其中四项真正实现，并把该文档重写为「代码实际执行的门禁」表。
 
-**验证**：全量测试 474 passed。`tests/test_models.py`（需真实 API key）与
+**分阶段与瘦身的实测效果**（每轮工具循环重发的 system instruction 大小）
+
+| 工作流 | 改造前 | 改造后 |
+| :-- | --: | :-- |
+| `/deep` | 23876 | 17034 / 14216 / 5884（三阶段） |
+| `/value` | 20800 | 14022 / 11200 / 5674（三阶段） |
+| `/scan` | 24699 | 20757 |
+| `/buy` | 20382 | 17181 |
+
+分阶段的收益不只是单次上下文变小：组装阶段不再继承研究阶段的工具调用历史，
+上下文从「一路累积」变成「只带交接说明」，中间产物走磁盘传递。
+
+**验证**：全量测试 518 passed。`tests/test_models.py`（需真实 API key）与
 `test_concurrency.py::test_bounded_at_max`（需 Telegram token）为环境相关的既有失败，
 改动前后一致。
 
