@@ -71,6 +71,7 @@ class ToolFactory:
         project_root: str,
         budget=None,
         workflow_name: str = "",
+        evidence=None,
     ):
         self.data_mgr = data_mgr
         self.data_hub = data_hub
@@ -82,6 +83,7 @@ class ToolFactory:
         self.report_quality_checker = ReportQualityChecker()
         self.workflow_name = workflow_name
         self.budget = budget
+        self.evidence = evidence
 
     def _charge(self, tool_name: str) -> Optional[str]:
         """扣减取证预算。超限返回一句给模型看的指令，未超限返回 None。
@@ -110,6 +112,41 @@ class ToolFactory:
             )
         self.budget.consume(cost)
         return None
+
+    def _record_evidence(self, tool_name: str, query: str, payload: str, url: str = "") -> None:
+        """把一次真实取证记进证据链。
+
+        意义不在于日志本身，而在于让「报告里声称的证据」可以和「实际取到的东西」对账。
+        此前 `missing_live_tooling_evidence` 是对报告正文做正则匹配——模型只要写下
+        `fetched_at` 三个字就能骗过它；有了真实记录，这个门禁才落到事实上。
+        """
+        if self.evidence is None:
+            return
+        try:
+            from core.toolbus.evidence import SourceRef
+
+            snippet = (payload or "")[:settings.search.content_truncation]
+            self.evidence.record(SourceRef(
+                tool_name=tool_name,
+                query=str(query)[:256],
+                url=url,
+                snippet=snippet,
+            ))
+        except Exception as exc:  # 记录失败不该拖垮取证本身
+            logger.warning("[evidence] failed to record %s: %s", tool_name, exc)
+
+    def get_evidence_log(self) -> str:
+        """返回本轮已经真实取到的证据清单（JSON）。
+        Return the evidence actually fetched so far in this workflow.
+
+        写『证据台账』前先调用它，按实际取到的东西填表，而不是凭记忆回想。
+        每条含工具名、查询、来源 URL、摘要与抓取时间——正是台账需要的列。
+        取证记录为空说明本轮一次都没取到数据，此时报告不得落盘。
+        """
+        if self.evidence is None:
+            return json.dumps({"records": [], "note": "evidence recording not enabled"}, ensure_ascii=False)
+        records = [ref.to_dict() for ref in self.evidence.sources]
+        return json.dumps({"count": len(records), "records": records}, ensure_ascii=False)
 
     def _budget_footer(self) -> str:
         """余额紧张时附一行提示，让模型自己收敛节奏。充裕时不附，省 token。"""
@@ -147,7 +184,9 @@ class ToolFactory:
         denied = self._charge("search_web")
         if denied:
             return denied
-        return self._do_search_web(query) + self._budget_footer()
+        result = self._do_search_web(query)
+        self._record_evidence("search_web", query, result)
+        return result + self._budget_footer()
 
     def _do_search_web(self, query: str) -> str:
         """未计费的搜索实现。计费在调用方完成，避免内部降级链路重复扣费。"""
@@ -225,6 +264,21 @@ class ToolFactory:
                 tier=tier,
                 expected_ticker=expected_ticker,
             )
+            # 用真实取证记录覆盖基于正文正则的推测：正则只能证明报告里「写了」
+            # fetched_at，证明不了真的取过数。有记录就以记录为准。
+            if self.evidence is not None:
+                fetched = len(self.evidence.sources)
+                quality["recorded_fetches"] = fetched
+                issues = quality.setdefault("issues", [])
+                if fetched == 0:
+                    if "missing_live_tooling_evidence" not in issues:
+                        issues.append("missing_live_tooling_evidence")
+                    quality["passed"] = False
+                elif "missing_live_tooling_evidence" in issues:
+                    # 确实取过数，只是正文没留下正则认得的痕迹——不因此拒收
+                    issues.remove("missing_live_tooling_evidence")
+                    quality["passed"] = not quality["missing_sections"] and not issues
+
             if not quality["passed"]:
                 self._record_report_write_status(abs_path, False, quality)
                 return (
@@ -245,6 +299,7 @@ class ToolFactory:
                 f.write(content)
             if self._is_research_report_path(abs_path) and ext.lower() == ".md":
                 self._record_report_write_status(abs_path, True, {"passed": True, "issues": []})
+                self._save_evidence_log(abs_path)
             return f"Successfully {success_action} {abs_path}"
         except Exception as e:
             return f"[File Error: {e}]"
@@ -321,6 +376,22 @@ class ToolFactory:
         except OSError:
             return []
         return reports
+
+    def _save_evidence_log(self, report_path: str) -> None:
+        """把本轮真实取证记录存到报告旁边，文件名与报告同名。
+
+        报告里的证据台账是模型写的，可能漏、可能记串；这份 JSONL 是工具层的原始记录。
+        两者放在一起，事后才能把某个结论展开回它当时依据的那一页。
+        """
+        if self.evidence is None or not self.evidence.sources:
+            return
+        stem = os.path.splitext(os.path.basename(report_path))[0]
+        try:
+            self.evidence.output_dir = os.path.join(os.path.dirname(report_path), "evidence")
+            path = self.evidence.save(stem)
+            logger.info("[evidence] saved %d records to %s", len(self.evidence.sources), path)
+        except OSError as exc:
+            logger.warning("[evidence] failed to save log for %s: %s", report_path, exc)
 
     def _record_report_write_status(self, abs_path: str, passed: bool, quality: dict) -> None:
         status_path = os.path.join(self.project_root, ".codex_runtime", "report_write_status.json")
@@ -428,7 +499,11 @@ class ToolFactory:
                     last_error = result.data["error"]
                     logger.warning("[browser_fetch] %s failed: %s", engine, last_error)
                     continue
-                return json.dumps(result.data, ensure_ascii=False)
+                payload = json.dumps(result.data, ensure_ascii=False)
+                self._record_evidence(
+                    f"browser_fetch:{engine}", f"{site} {command or ''}".strip(), payload
+                )
+                return payload
             except Exception as e:
                 last_error = str(e)
                 logger.warning("[browser_fetch] %s exception: %s", engine, last_error)
@@ -473,7 +548,9 @@ class ToolFactory:
         }
         if "price_error" in match:
             payload["price_error"] = match["price_error"]
-        return json.dumps(payload, ensure_ascii=False)
+        encoded = json.dumps(payload, ensure_ascii=False)
+        self._record_evidence("get_realtime_quote", symbol, encoded)
+        return encoded
 
     # 取价来源：按「来源族」排布，同族再多也不构成交叉验证
     PRICE_SOURCES = ("yfinance", "tencent", "eastmoney")
@@ -568,7 +645,9 @@ class ToolFactory:
         }
         if len(numeric) < 2:
             payload["error"] = "fewer than two price sources returned numeric prices"
-        return json.dumps(payload, ensure_ascii=False)
+        encoded = json.dumps(payload, ensure_ascii=False)
+        self._record_evidence("cross_validate_price", symbol, encoded)
+        return encoded
 
     def cross_validate_metric(
         self,
@@ -601,7 +680,9 @@ class ToolFactory:
         )
         result["field"] = field
         result["checked_at"] = datetime.now(timezone.utc).isoformat()
-        return json.dumps(result, ensure_ascii=False)
+        encoded = json.dumps(result, ensure_ascii=False)
+        self._record_evidence("cross_validate_metric", field, encoded)
+        return encoded
 
     def verify_market_cap(
         self,
@@ -657,7 +738,9 @@ class ToolFactory:
                     "关键数字请再用 cross_validate_metric 与巨潮年报原文对一遍；"
                     "东方财富与其他行情站同属交易所转发族，互相比对不构成交叉。"
                 )
-                return json.dumps(data, ensure_ascii=False)
+                encoded = json.dumps(data, ensure_ascii=False)
+                self._record_evidence("get_financials", symbol, encoded)
+                return encoded
             except Exception as exc:
                 logger.warning("[get_financials] eastmoney failed for %s: %s", symbol, exc)
 
@@ -833,7 +916,9 @@ class ToolFactory:
         denied = self._charge("drill_source")
         if denied:
             return denied
-        return self._do_search_web(f"{query} 研报 分析") + self._budget_footer()
+        result = self._do_search_web(f"{query} 研报 分析")
+        self._record_evidence("drill_source", query, result)
+        return result + self._budget_footer()
 
     def get_tools(self) -> list:
         """返回工具函数列表，供 LLM function calling 使用。"""
@@ -848,6 +933,7 @@ class ToolFactory:
             self.verify_market_cap,
             self.get_financials,
             self.check_report_quality,
+            self.get_evidence_log,
             self.get_portfolio_snapshot,
             self.preview_trade,
             self.execute_trade,

@@ -440,10 +440,10 @@ class TestBrowserFetch:
 # ---- get_tools ----
 
 class TestGetTools:
-    def test_get_tools_returns_19(self, factory):
+    def test_get_tools_returns_20(self, factory):
         """get_tools 返回当前公开的 19 个工具函数。"""
         tools = factory.get_tools()
-        assert len(tools) == 19
+        assert len(tools) == 20
         # 所有条目都是 callable
         for tool in tools:
             assert callable(tool)
@@ -456,6 +456,7 @@ class TestGetTools:
             "search_web", "read_file", "list_dir", "write_to_file",
             "get_realtime_quote", "cross_validate_price", "cross_validate_metric",
             "verify_market_cap", "get_financials", "check_report_quality",
+            "get_evidence_log",
             "get_portfolio_snapshot", "preview_trade", "execute_trade",
             "execute_python_script", "browser_fetch", "drill_source",
             "browser_operate", "system_doctor", "learn_source",
@@ -615,3 +616,167 @@ class TestSegmentedReportWrite:
             "Reports/20260604/20260604_TSLA_Quick.md", "## 补充\n只有一个片段。\n", mode="a"
         )
         assert "Report quality gate failed" in result
+
+
+# ---- 证据链（v5.0） ----
+
+from core.toolbus.evidence import EvidenceRecorder  # noqa: E402
+
+
+@pytest.fixture
+def recording_factory(tmp_path):
+    """带证据链记录的 ToolFactory。"""
+    data_mgr = MagicMock()
+    data_mgr.search_web.return_value = "search result body"
+    data_hub = MagicMock()
+    data_hub._sources = {}
+    return ToolFactory(
+        data_mgr=data_mgr,
+        data_hub=data_hub,
+        ledger=MagicMock(),
+        kill_switch=MagicMock(),
+        guard_chain=MagicMock(),
+        execution_pipeline=MagicMock(),
+        project_root=str(tmp_path),
+        workflow_name="quick",
+        evidence=EvidenceRecorder(),
+    )
+
+
+class TestEvidenceRecording:
+    def test_search_is_recorded(self, recording_factory):
+        recording_factory.search_web("NVDA earnings")
+
+        assert len(recording_factory.evidence.sources) == 1
+        ref = recording_factory.evidence.sources[0]
+        assert ref.tool_name == "search_web"
+        assert ref.query == "NVDA earnings"
+        assert "search result body" in ref.snippet
+        assert ref.timestamp is not None
+
+    def test_quote_tools_are_recorded_even_though_they_are_free(self, recording_factory):
+        recording_factory.data_mgr.fetch_market_prices.return_value = [
+            {"ticker": "NVDA", "name": "NVDA", "price": 100.0, "change": 1.0}
+        ]
+        recording_factory.get_realtime_quote("NVDA")
+
+        # 取行情不消耗预算，但它确实是一次真实取证，必须进证据链
+        names = [r.tool_name for r in recording_factory.evidence.sources]
+        assert "get_realtime_quote" in names
+
+    def test_refused_call_is_not_recorded(self, tmp_path):
+        factory = ToolFactory(
+            data_mgr=MagicMock(), data_hub=MagicMock(), ledger=MagicMock(),
+            kill_switch=MagicMock(), guard_chain=MagicMock(),
+            execution_pipeline=MagicMock(), project_root=str(tmp_path),
+            budget=BudgetManager(max_budget=0), evidence=EvidenceRecorder(),
+        )
+        factory.data_hub._sources = {}
+
+        result = factory.search_web("blocked")
+
+        assert "取证预算已用尽" in result
+        assert factory.evidence.sources == []
+
+    def test_get_evidence_log_returns_what_was_fetched(self, recording_factory):
+        recording_factory.search_web("q1")
+        recording_factory.search_web("q2")
+
+        payload = json.loads(recording_factory.get_evidence_log())
+
+        assert payload["count"] == 2
+        assert [r["query"] for r in payload["records"]] == ["q1", "q2"]
+
+    def test_evidence_log_is_empty_without_recorder(self, factory):
+        payload = json.loads(factory.get_evidence_log())
+        assert payload["records"] == []
+
+
+class TestLiveToolingGateUsesRealRecord:
+    """门禁此前只对正文做正则匹配——写下 fetched_at 三个字就能骗过。"""
+
+    _REPORT = """# 20260604 NVDA 报告
+
+## 结论先行
+结论：等待。置信度：中。
+
+## 实时数据快照
+- NVDA 现价 100.0，日内涨跌 +1.2%，取自行情接口
+
+## 证据台账
+| 判断 | 证据 | 来源 | 日期 |
+| --- | --- | --- | --- |
+| 看空：增长放缓 | 下季指引低于市场一致预期 | 来源: 公司电话会纪要 | 2026-06-04 |
+| 估值偏高 | Forward PE 高于近五年中位数 | 来源: 财务数据库 | 2026-06-04 |
+| 订单能见度下降 | 主要客户资本开支指引下修 | 来源: 客户季报 | 2026-06-03 |
+
+## Bull/Base/Bear
+- Bull (25%): 数据中心订单超预期，EPS 上修，估值维持高位不回落。
+- Base (55%): 增长按指引兑现，估值随盈利消化，股价区间震荡。
+- Bear (20%): 客户资本开支放缓，指引下修，估值与盈利双杀。
+
+## 行动计划
+- 触发器：回落至 90 元以下且季度指引未下修时重新评估建仓。
+- 失效条件：连续两个季度数据中心收入环比负增长，则本轮逻辑作废。
+- 下次复盘：下一季财报发布后三个交易日内。
+
+## 风险与不确定性
+- 口径存在 GAAP / Non-GAAP 差异，需要回原始披露复核；行情数据可能延迟。
+
+### 证据缺口
+- 缺分部毛利率拆分 — 影响估值锚点 — 下一步去 10-Q 原文取。
+
+## 质量自检
+- 已检查来源、日期、反方观点和行动计划。
+"""
+
+    def _factory(self, tmp_path, recorder):
+        f = ToolFactory(
+            data_mgr=MagicMock(), data_hub=MagicMock(), ledger=MagicMock(),
+            kill_switch=MagicMock(), guard_chain=MagicMock(),
+            execution_pipeline=MagicMock(), project_root=str(tmp_path),
+            workflow_name="quick", evidence=recorder,
+        )
+        f.data_hub._sources = {}
+        return f
+
+    def test_zero_real_fetches_is_rejected_however_the_text_reads(self, tmp_path):
+        factory = self._factory(tmp_path, EvidenceRecorder())
+        # 正文里写满 fetched_at 也没用——工具层记录为 0
+        text = self._REPORT.replace("- NVDA 现价 100.0", "- NVDA 100.0 fetched_at: 2026-06-04T12:00:00Z")
+
+        result = factory.write_to_file("Reports/20260604/20260604_NVDA_Quick.md", text)
+
+        assert "Report quality gate failed" in result
+        assert "missing_live_tooling_evidence" in result
+
+    def test_real_fetch_satisfies_the_gate_without_magic_words(self, tmp_path):
+        recorder = EvidenceRecorder()
+        factory = self._factory(tmp_path, recorder)
+        factory.data_mgr.search_web.return_value = "real result"
+        factory.search_web("NVDA guidance")
+
+        # 报告正文没有 fetched_at / verdict 之类的字样，但确实取过数
+        result = factory.write_to_file("Reports/20260604/20260604_NVDA_Quick.md", self._REPORT)
+
+        assert "Successfully saved" in result
+
+    def test_evidence_log_is_saved_next_to_the_report(self, tmp_path):
+        recorder = EvidenceRecorder()
+        factory = self._factory(tmp_path, recorder)
+        factory.data_mgr.search_web.return_value = "real result"
+        factory.search_web("NVDA guidance")
+
+        factory.write_to_file("Reports/20260604/20260604_NVDA_Quick.md", self._REPORT)
+
+        log = tmp_path / "Reports" / "20260604" / "evidence" / "20260604_NVDA_Quick_sources.jsonl"
+        assert log.is_file()
+        record = json.loads(log.read_text(encoding="utf-8").strip().splitlines()[0])
+        assert record["tool_name"] == "search_web"
+        assert record["query"] == "NVDA guidance"
+
+    def test_gate_is_unchanged_when_recording_is_off(self, tmp_path):
+        factory = self._factory(tmp_path, None)
+        result = factory.write_to_file("Reports/20260604/20260604_NVDA_Quick.md", self._REPORT)
+        # 没有记录器时退回正文正则判断：这份报告没有 fetched_at 痕迹
+        assert "missing_live_tooling_evidence" in result

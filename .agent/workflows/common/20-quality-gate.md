@@ -72,7 +72,7 @@ check_report_quality(markdown, filename)
 | `evidence_missing_bear_row` | 证据台账里没有任何一行是反方证据 |
 | `missing_explicit_date` | 全篇找不到 `YYYY-MM-DD` 或 `YYYYMMDD` 形态的日期 |
 | `missing_source_reference` | 全篇没有 URL / `来源` / `出处` / `fetched_at` |
-| `missing_live_tooling_evidence` | 找不到 `fetched_at` / `verdict` / `cross_validate` / `consensus_price` 等真实取数痕迹 |
+| `missing_live_tooling_evidence` | 工具层记录到的真实取证次数为 0（`get_evidence_log()` 可查）。未启用记录时退回正文正则：找不到 `fetched_at` / `verdict` / `cross_validate` / `consensus_price` 等痕迹 |
 | `missing_two_sided_view` | 全篇没有反方（Bear / 空方）表述 |
 | `price_commitment_without_provenance` | 出现目标价 / 止损 / 盈亏比，却没有价格交叉验证记录 |
 | `ticker_mismatch` | 正文没出现文件名标注的标的 |
@@ -81,7 +81,8 @@ check_report_quality(markdown, filename)
 | `unexplained_conflict_with_prior_report` | 与历史报告冲突但缺 `## 冲突解释`（见下） |
 
 返回结果还带三个**参考字段**（不直接判不合格，但会被记录）：`evidence_row_count`（实际证据行数）、
-`unsourced_claims`（`[UNSOURCED]` 标记数）、`tier`（本次按哪一档校验）。
+`unsourced_claims`（`[UNSOURCED]` 标记数）、`tier`（本次按哪一档校验）、
+`recorded_fetches`（工具层记录到的真实取证次数）。
 
 价格如实申报为单源**不拒收**——但按报告契约，这时一律不给目标价 / 止损 / 盈亏比；
 给了就会命中 `price_commitment_without_provenance`。

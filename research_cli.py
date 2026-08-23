@@ -39,6 +39,7 @@ from core.artifacts.schemas import OrderIntent
 from core import settings
 from core.tool_factory import ToolFactory
 from core.toolbus.budget import BudgetManager
+from core.toolbus.evidence import EvidenceRecorder
 from core.network_time import get_network_date
 from services.portfolio.ledger import PortfolioLedger
 from services.execution.pipeline import ExecutionPipeline
@@ -208,6 +209,7 @@ class ResearchAgent:
         self.runner = WorkflowRunner(PROJECT_ROOT)
         self._chat_lock = threading.RLock()
         self._budget = None
+        self._evidence = None
 
         # --- Core service instances (no longer global) ---
         self.ledger = PortfolioLedger()
@@ -268,6 +270,7 @@ class ResearchAgent:
             project_root=PROJECT_ROOT,
             budget=self._budget if workflow_name else None,
             workflow_name=workflow_name,
+            evidence=self._evidence if workflow_name else None,
         )
         return factory.get_tools()
 
@@ -283,8 +286,9 @@ class ResearchAgent:
             budget_max = settings.workflow_budget.for_workflow(workflow_name)
             stages = settings.workflow_stages.stages_for(workflow_name)
 
-            # 每轮 workflow 一份全新预算，阶段之间共享
+            # 每轮 workflow 一份全新预算与证据链，阶段之间共享
             self._budget = BudgetManager(max_budget=budget_max)
+            self._evidence = EvidenceRecorder()
 
             try:
                 if stages:
@@ -296,7 +300,10 @@ class ResearchAgent:
                     f"   Search budget used: {usage['consumed']}/{usage['max_budget']}"
                     f" (remaining {usage['remaining']})"
                 )
+                if self._evidence is not None:
+                    print(f"   Evidence recorded: {len(self._evidence.sources)} fetches")
                 self._budget = None
+                self._evidence = None
 
     def _run_single(self, workflow_name: str, task: str, ticker: str, budget_max: int) -> str:
         use_pro = workflow_name in self.PRO_WORKFLOWS

@@ -15,7 +15,7 @@
 ---
 
 4.  **Synthesize Report (Quality Verdict)**:
-    - **Format**: Based on `Workflow_Layer/Templates/Template_A_Quality_Compounder.md`.
+    - **Format**: Based on `Templates/Template_A_Quality_Compounder.md`.
     - **CRITICAL: The Report MUST be written in CHINESE (Simplified).**
     - **Sections**（按公共报告契约的章节组织，专业模块嵌在其中）：
         - **结论先行**：`Quality Score[如 A+ Compounder] · 评级 · 动作[买/等/继续研究] · 置信度[高/中/低] · 一句理由(≤30字)` + 相对上次档案的变化（无历史标「🆕首次质量评估」）+ **价格证据行**。
