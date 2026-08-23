@@ -7,6 +7,11 @@ description: 个股研究与分析技能。用于：初次调研某只股票建�
 
 本技能提供个股深度研究的完整框架，覆盖从初始调研到持续跟踪的全流程。
 
+> **定位说明**：本目录是**思维框架素材库**，供自由对话与新工作流设计时取用。
+> 实际执行的 17 个工作流在 `.agent/workflows/`，它们受 `common/` 三份公共契约约束
+> （报告结构 / 证据标准 / 质量门禁），并有代码级落盘门禁。
+> 两者若有冲突，**以 `.agent/workflows/` 为准**。
+
 ## 核心理念
 
 投资提示词的本质是"投资思维的代码化"，用于固定投资思维与逻辑，确保分析视角不遗漏，情绪上保持克制。
@@ -16,22 +21,28 @@ description: 个股研究与分析技能。用于：初次调研某只股票建�
 1.  **Anchor Date**: 永远首先确认系统当前时间。
 2.  **Freshness Check**: 任何输入的 Knowledge Base 视为"历史参考"。必须进行一次`Verify`性质的联网搜索（如："NIO latest earnings 2025 2026"），确保决策基于当下最新数据。
 3.  **Version Override**: 当知识库数据与联网数据冲突时，以联网最新数据为准（Timestamp Priority）。
-4.  **Large File Handling**: 写入长篇报告（如超过 5000 字）时，必须分段调用 `write_to_file`。第一段使用 `mode='w'` 创建并写入开头，后续段落使用 `mode='a'` 逐一追加，以避免因单次调用数据量过大导致超时。
+4.  **Large File Handling**: `Reports/**/*.md` 有代码级落盘门禁，校验的是**文件的最终完整状态**。
+    因此写入长篇报告时：
+    - **不要**用 `mode='w'` 先写一个开头再逐段追加——首段本身不是一份完整报告，会被门禁直接拒绝。
+    - 正确做法：报告一次性写完整份；确实需要分段准备时，先把草稿分段写到 `Reports/Raw_Data/`
+      （该目录不受门禁约束），组装完成后再整份落盘到正式路径。
+    - `mode='a'` 适用于向**已经合格**的报告追加补充章节（如事后补 `## 冲突解释`），
+      此时门禁会按「已有内容 + 追加内容」校验。
 
 ## 提示词矩阵
 
-| 提示词 | 场景 | 参考文件 |
-|-------|------|---------|
-| P1-Genesis | 初次调研，建立个股基石档案 | [p1-genesis.md](references/p1-genesis.md) |
-| P4-Radar | 生成个股强制关注信息清单 | [p4-radar.md](references/p4-radar.md) |
-| P9-Valuation | 反向 DCF 估值泡沫度量 | [p9-valuation.md](references/p9-valuation.md) |
-| P15-Insight | 事件触发的 7 维深度洞察 | [p15-insight.md](references/p15-insight.md) |
+| 提示词 | 场景 | 参考文件 | 对应工作流 |
+|-------|------|---------|---------|
+| P1-Genesis | 初次调研，建立个股基石档案 | [deep-genesis.md](references/deep-genesis.md) | `/deep` |
+| P4-Radar | 生成个股强制关注信息清单 | [radar-checklist.md](references/radar-checklist.md) | `/update` |
+| P9-Valuation | 反向 DCF 估值泡沫度量 | [deep-valuation.md](references/deep-valuation.md) | `/deep` `/value` |
+| P15-Insight | 事件触发的 7 维深度洞察 | [quick-insight.md](references/quick-insight.md) | `/quick` |
 
 ## 使用指南
 
 ### 场景 1: 初次关注某只股票
 
-读取 [p1-genesis.md](references/p1-genesis.md)，使用 P1 模板建立深度基石档案。
+读取 [deep-genesis.md](references/deep-genesis.md)，使用 P1 模板建立深度基石档案。
 
 **输入要求：**
 - `ticker`: 股票代码（必填）
@@ -41,7 +52,7 @@ description: 个股研究与分析技能。用于：初次调研某只股票建�
 
 ### 场景 2: 设置个股关注雷达
 
-读取 [p4-radar.md](references/p4-radar.md)，使用 P4 模板生成信息关注清单。
+读取 [radar-checklist.md](references/radar-checklist.md)，使用 P4 模板生成信息关注清单。
 
 **输入要求：**
 - `ticker`: 股票代码（必填）
@@ -51,7 +62,7 @@ description: 个股研究与分析技能。用于：初次调研某只股票建�
 
 ### 场景 3: 评估估值是否过高
 
-读取 [p9-valuation.md](references/p9-valuation.md)，使用 P9 模板进行反向 DCF 分析。
+读取 [deep-valuation.md](references/deep-valuation.md)，使用 P9 模板进行反向 DCF 分析。
 
 **输入要求：**
 - `ticker`: 股票代码（必填）
@@ -63,7 +74,7 @@ description: 个股研究与分析技能。用于：初次调研某只股票建�
 
 ### 场景 4: 事件触发的深度洞察
 
-读取 [p15-insight.md](references/p15-insight.md)，使用 P15 模板进行 7 维分析。
+读取 [quick-insight.md](references/quick-insight.md)，使用 P15 模板进行 7 维分析。
 
 **输入要求：**
 - `ticker`: 股票代码（必填）

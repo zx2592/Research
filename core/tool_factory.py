@@ -213,8 +213,14 @@ class ToolFactory:
         
         if self._is_research_report_path(abs_path) and ext.lower() == ".md":
             tier, expected_ticker = self._infer_report_context(abs_path)
+            # 分段写入时校验「拼接后的完整报告」，而不是这一个片段。
+            # 片段既不以 # 开头也不含七个章节，逐段送检必然失败——
+            # 那样等于禁止分段写入，把长报告逼成一次性巨型输出。
+            candidate = content
+            if mode == "a":
+                candidate = self._existing_text(abs_path) + content
             quality = self.report_quality_checker.check(
-                content,
+                candidate,
                 prior_reports=self._load_related_reports(abs_path),
                 tier=tier,
                 expected_ticker=expected_ticker,
@@ -242,6 +248,15 @@ class ToolFactory:
             return f"Successfully {success_action} {abs_path}"
         except Exception as e:
             return f"[File Error: {e}]"
+
+    @staticmethod
+    def _existing_text(abs_path: str) -> str:
+        """读取已有内容，供分段写入时拼接校验。文件不存在按空串处理。"""
+        try:
+            with open(abs_path, "r", encoding="utf-8") as handle:
+                return handle.read()
+        except OSError:
+            return ""
 
     def _infer_report_context(self, abs_path: str) -> tuple[str, str]:
         """从报告文件名推断校验档位与预期 ticker。

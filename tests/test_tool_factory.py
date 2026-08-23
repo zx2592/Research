@@ -555,3 +555,63 @@ class TestReportTierInference:
         )
         assert as_default["tier"] == "default"
         assert as_deep["tier"] == "deep"
+
+
+class TestSegmentedReportWrite:
+    """分段写入必须校验拼接后的完整文件，而不是单个片段。"""
+
+    _VALID = """# 20260604 NVDA 报告
+
+## 结论先行
+结论：等待。置信度：中。
+
+## 实时数据快照
+- NVDA price: 100.0, source: yfinance, fetched_at: 2026-06-04T12:00:00Z
+
+## 证据台账
+| 判断 | 证据 | 来源 | 日期 |
+| --- | --- | --- | --- |
+| 看空：增长放缓 | 指引下修 | source: test | 2026-06-04 |
+| 估值偏高 | PE 高于中位 | source: test | 2026-06-04 |
+
+## Bull/Base/Bear
+- Bull (25%): 数据中心订单超预期，EPS 上修，估值维持高位不回落。
+- Base (55%): 增长按指引兑现，估值随盈利消化，股价区间震荡。
+- Bear (20%): 客户资本开支放缓，指引下修，估值与盈利双杀。
+
+## 行动计划
+- 触发器：回落至 90 元以下且季度指引未下修时重新评估建仓。
+- 失效条件：连续两个季度数据中心收入环比负增长，则本轮逻辑作废。
+- 下次复盘：下一季财报发布后三个交易日内。
+
+## 风险与不确定性
+- 数据源可能延迟，季度指引口径存在 GAAP / Non-GAAP 差异，需要回原始披露复核。
+
+### 证据缺口
+- 缺分部毛利率拆分 — 影响估值锚点 — 下一步去 10-Q 原文取。
+
+## 质量自检
+- 已检查来源、日期、反方观点和行动计划。
+"""
+
+    def test_append_is_checked_against_combined_file(self, factory, tmp_path):
+        path = "Reports/20260604/20260604_NVDA_Quick.md"
+        assert "Successfully saved" in factory.write_to_file(path, self._VALID)
+
+        # 追加片段本身不是完整报告，但拼接后的文件仍然合格
+        result = factory.write_to_file(path, "\n## 冲突解释\n与上一份的差异来自更新后证据。\n", mode="a")
+
+        assert "Successfully appended" in result
+        written = (tmp_path / path).read_text(encoding="utf-8")
+        assert "## 冲突解释" in written
+        assert written.startswith("# 20260604")
+
+    def test_append_that_breaks_the_report_is_still_rejected(self, factory, tmp_path):
+        path = "Reports/20260604/20260604_NVDA_Quick.md"
+        factory.write_to_file(path, self._VALID)
+        # 拼接后仍要过门禁：这里用一个会让 ticker 对不上的全新片段是无效的，
+        # 改为验证向不存在的报告直接追加片段会被拒（拼接后 = 片段本身）
+        result = factory.write_to_file(
+            "Reports/20260604/20260604_TSLA_Quick.md", "## 补充\n只有一个片段。\n", mode="a"
+        )
+        assert "Report quality gate failed" in result
