@@ -461,3 +461,97 @@ class TestGetTools:
             "browser_operate", "system_doctor", "learn_source",
         ]
         assert names == expected
+
+
+# ---- 取证预算（v5.0） ----
+
+from core.toolbus.budget import BudgetManager  # noqa: E402
+
+
+@pytest.fixture
+def budgeted_factory(tmp_path):
+    """带 2 点取证预算的 ToolFactory。"""
+    data_mgr = MagicMock()
+    data_mgr.search_web.return_value = "search result"
+    data_hub = MagicMock()
+    data_hub._sources = {}
+    f = ToolFactory(
+        data_mgr=data_mgr,
+        data_hub=data_hub,
+        ledger=MagicMock(),
+        kill_switch=MagicMock(),
+        guard_chain=MagicMock(),
+        execution_pipeline=MagicMock(),
+        project_root=str(tmp_path),
+        budget=BudgetManager(max_budget=2),
+        workflow_name="quick",
+    )
+    return f
+
+
+class TestSearchBudget:
+    def test_calls_within_budget_succeed(self, budgeted_factory):
+        assert "search result" in budgeted_factory.search_web("q1")
+        assert "search result" in budgeted_factory.search_web("q2")
+
+    def test_call_beyond_budget_is_refused_softly(self, budgeted_factory):
+        budgeted_factory.search_web("q1")
+        budgeted_factory.search_web("q2")
+        third = budgeted_factory.search_web("q3")
+
+        # 软失败：返回指令而不是抛异常，避免整轮工具循环作废
+        assert "取证预算已用尽" in third
+        assert "UNSOURCED" in third
+        assert budgeted_factory.data_mgr.search_web.call_count == 2
+
+    def test_low_balance_footer_nudges_model(self, budgeted_factory):
+        first = budgeted_factory.search_web("q1")
+        assert "取证预算余额: 1" in first
+
+    def test_no_budget_means_unlimited(self, factory):
+        factory.data_mgr.search_web.return_value = "ok"
+        for _ in range(5):
+            assert "取证预算已用尽" not in factory.search_web("q")
+
+    def test_non_fetching_tools_are_free(self, budgeted_factory, tmp_path):
+        (tmp_path / "note.md").write_text("hello", encoding="utf-8")
+        for _ in range(5):
+            budgeted_factory.read_file("note.md")
+        # 读文件不产生外部请求，不该占用取证预算
+        assert budgeted_factory.budget.remaining() == 2
+
+    def test_browser_fetch_fallback_does_not_double_charge(self, budgeted_factory):
+        budgeted_factory.data_hub.fetch.side_effect = RuntimeError("engine down")
+        budgeted_factory.browser_fetch(site="xueqiu", command="search", query="NVDA")
+        # 一次外部请求只扣一次费，哪怕内部从结构化抓取降级到了网页搜索
+        assert budgeted_factory.budget.remaining() == 1
+
+
+class TestReportTierInference:
+    def test_tier_and_ticker_from_filename(self, factory):
+        assert factory._infer_report_context("Reports/deepdive/20260604_NVDA_Deep.md") == (
+            "deep",
+            "NVDA",
+        )
+        assert factory._infer_report_context("Reports/20260604/20260604_Market_Scan.md") == (
+            "scan",
+            "",
+        )
+        assert factory._infer_report_context("Reports/20260604/odd-name.md") == ("default", "")
+
+    def test_quality_gate_blocks_write_and_explains(self, factory, tmp_path):
+        result = factory.write_to_file(
+            "Reports/20260604/20260604_NVDA_Quick.md", "# 只有标题没有内容"
+        )
+        assert "Report quality gate failed" in result
+        assert "重新调用 write_to_file" in result
+        assert not (tmp_path / "Reports" / "20260604" / "20260604_NVDA_Quick.md").exists()
+
+    def test_check_report_quality_uses_filename_tier(self, factory):
+        thin = "# 报告\n\n## 结论先行\n结论：等待。\n"
+        as_default = json.loads(factory.check_report_quality(thin))
+        as_deep = json.loads(
+            factory.check_report_quality(thin, filename="Reports/deepdive/20260604_NVDA_Deep.md")
+        )
+        assert as_default["tier"] == "default"
+        assert as_deep["tier"] == "deep"

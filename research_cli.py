@@ -38,6 +38,7 @@ from core.data_manager import DataManager
 from core.artifacts.schemas import OrderIntent
 from core import settings
 from core.tool_factory import ToolFactory
+from core.toolbus.budget import BudgetManager
 from core.network_time import get_network_date
 from services.portfolio.ledger import PortfolioLedger
 from services.execution.pipeline import ExecutionPipeline
@@ -135,6 +136,17 @@ class WorkflowRunner:
             f"报告文件命名和路径必须使用此日期。\n"
         )
 
+        # 注入取证预算：与 ToolFactory 在工具层强制的是同一个数字（settings 单一真理源），
+        # 提示词里写多少、代码就拦多少，不再出现「正文写 28 次、SYSTEM.md 写 8 次」的分歧。
+        budget = settings.workflow_budget.for_workflow(workflow_name)
+        parts.append(
+            f"\n---\n## Search Budget\n"
+            f"本次 workflow 的联网取证预算为 **{budget} 点**"
+            f"（search_web / browser_fetch / drill_source 各 1 点，learn_source 2 点）。\n"
+            f"预算由代码强制：超出后取证工具会直接拒绝调用，你将只能用已有证据完成报告。\n"
+            f"请把预算花在最关键的交叉验证上，不要用它做重复查询。\n"
+        )
+
         if workflow_name in self.RSS_WORKFLOWS:
             rss = self.load_latest_rss()
             if rss:
@@ -148,11 +160,15 @@ class WorkflowRunner:
 class ResearchAgent:
     """Workflow-oriented research agent for CLI and bot entry points."""
 
-    PRO_WORKFLOWS = frozenset({"deep", "value"})
+    # 模型分档来自 settings（可用 PRO_WORKFLOWS 环境变量覆盖）。
+    # buy/sell 触碰真实下单，属高后果任务，与 deep/value 同走 Pro：
+    # 一次 Pro 调用的成本增量远低于一次错误交易。
+    PRO_WORKFLOWS = settings.model_routing.pro_workflows()
 
     def __init__(self):
         self.runner = WorkflowRunner(PROJECT_ROOT)
         self._chat_lock = threading.RLock()
+        self._budget = None
 
         # --- Core service instances (no longer global) ---
         self.ledger = PortfolioLedger()
@@ -197,8 +213,12 @@ class ResearchAgent:
         """安全路径解析，防止目录遍历。"""
         return ToolFactory._safe_resolve(base, user_path)
 
-    def _tools(self):
-        """Return the tool functions exposed to the model."""
+    def _tools(self, workflow_name: str = ""):
+        """Return the tool functions exposed to the model.
+
+        `workflow_name` 为空表示自由对话（非 workflow），此时不设取证预算——
+        预算是 workflow 级的约束，用户手动追问不该被工作流额度限制。
+        """
         factory = ToolFactory(
             data_mgr=self.data_mgr,
             data_hub=self.data_hub,
@@ -207,6 +227,8 @@ class ResearchAgent:
             guard_chain=self.guard_chain,
             execution_pipeline=self.execution_pipeline,
             project_root=PROJECT_ROOT,
+            budget=self._budget if workflow_name else None,
+            workflow_name=workflow_name,
         )
         return factory.get_tools()
 
@@ -215,8 +237,15 @@ class ResearchAgent:
         with self._chat_lock:
             use_pro = workflow_name in self.PRO_WORKFLOWS
             model_label = "Pro" if use_pro else "Flash"
-            print(f"\nWorkflow [{workflow_name}] | Ticker: {ticker or 'N/A'} | Model: {model_label}")
+            budget_max = settings.workflow_budget.for_workflow(workflow_name)
+            print(
+                f"\nWorkflow [{workflow_name}] | Ticker: {ticker or 'N/A'} | "
+                f"Model: {model_label} | Search budget: {budget_max}"
+            )
             print("   Python pre-loading context...")
+
+            # 每轮 workflow 一份全新预算，避免上一轮的消耗影响这一轮
+            self._budget = BudgetManager(max_budget=budget_max)
 
             system_instruction = self.runner.build_system_instruction(workflow_name)
 
@@ -225,9 +254,17 @@ class ResearchAgent:
             # 每次 workflow 创建新的独立 session（兼容 VPS 和桌面模式）
             self.llm.reset()
             self.llm.system_instruction = system_instruction
-            self.llm.create_chat(tools=self._tools(), use_pro=use_pro)
+            self.llm.create_chat(tools=self._tools(workflow_name), use_pro=use_pro)
 
-            result = self.llm.chat(task)
+            try:
+                result = self.llm.chat(task)
+            finally:
+                usage = self._budget.usage_report()
+                print(
+                    f"   Search budget used: {usage['consumed']}/{usage['max_budget']}"
+                    f" (remaining {usage['remaining']})"
+                )
+                self._budget = None
             print(f"\nWorkflow [{workflow_name}] complete.\n")
             return result
 

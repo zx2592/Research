@@ -50,7 +50,28 @@ class ToolFactory:
 
     SAFE_WRITE_EXTENSIONS = {".md", ".json", ".csv", ".txt", ".yaml", ".yml"}
 
-    def __init__(self, data_mgr, data_hub, ledger, kill_switch, guard_chain, execution_pipeline, project_root: str):
+    # 取证类工具的预算点数。非取证工具（读文件、算市值、查持仓）不计费——
+    # 它们不产生外部请求，限制它们只会逼模型少做交叉验证。
+    TOOL_BUDGET_COST = {
+        "search_web": 1,
+        "browser_fetch": 1,
+        "drill_source": 1,
+        "browser_operate": 1,
+        "learn_source": 2,
+    }
+
+    def __init__(
+        self,
+        data_mgr,
+        data_hub,
+        ledger,
+        kill_switch,
+        guard_chain,
+        execution_pipeline,
+        project_root: str,
+        budget=None,
+        workflow_name: str = "",
+    ):
         self.data_mgr = data_mgr
         self.data_hub = data_hub
         self.ledger = ledger
@@ -59,6 +80,47 @@ class ToolFactory:
         self.execution_pipeline = execution_pipeline
         self.project_root = project_root
         self.report_quality_checker = ReportQualityChecker()
+        self.workflow_name = workflow_name
+        self.budget = budget
+
+    def _charge(self, tool_name: str) -> Optional[str]:
+        """扣减取证预算。超限返回一句给模型看的指令，未超限返回 None。
+
+        故意「软失败」而不是抛异常：预算耗尽时整轮工具循环里已经积累了大量取证结果，
+        抛异常会让这一轮全部作废、下次重跑再花一遍钱。返回指令性文本能让模型就地收敛
+        ——用手上已有的证据把报告写完，并在证据台账里如实标注取证已达上限。
+        """
+        if self.budget is None:
+            return None
+        cost = self.TOOL_BUDGET_COST.get(tool_name, 0)
+        if cost <= 0:
+            return None
+        if not self.budget.can_afford(cost):
+            usage = self.budget.usage_report()
+            logger.warning(
+                "[budget] %s blocked for workflow=%s (%s/%s used)",
+                tool_name, self.workflow_name or "?", usage["consumed"], usage["max_budget"],
+            )
+            return (
+                f"[取证预算已用尽] {tool_name} 被拒绝："
+                f"本次 workflow 预算 {usage['max_budget']} 点已全部消耗。\n"
+                "不要再尝试任何联网取证工具。请用已经取到的证据完成报告，"
+                "并在『证据台账』中对未能取证的判断标注 [UNSOURCED]，"
+                "在『质量自检』中如实写明取证已达上限。"
+            )
+        self.budget.consume(cost)
+        return None
+
+    def _budget_footer(self) -> str:
+        """余额紧张时附一行提示，让模型自己收敛节奏。充裕时不附，省 token。"""
+        if self.budget is None:
+            return ""
+        remaining = self.budget.remaining()
+        if remaining > 3:
+            return ""
+        if remaining <= 0:
+            return "\n[取证预算余额: 0 — 这是最后一次取证，请开始写报告]"
+        return f"\n[取证预算余额: {remaining} 点，请优先安排最关键的取证]"
 
     @staticmethod
     def _safe_resolve(base: str, user_path: str) -> str:
@@ -82,6 +144,13 @@ class ToolFactory:
 
     def search_web(self, query: str) -> str:
         """搜索互联网获取最新信息。Search the web for latest information."""
+        denied = self._charge("search_web")
+        if denied:
+            return denied
+        return self._do_search_web(query) + self._budget_footer()
+
+    def _do_search_web(self, query: str) -> str:
+        """未计费的搜索实现。计费在调用方完成，避免内部降级链路重复扣费。"""
         result = self.data_mgr.search_web(query)
         if "配额已用完" in result or "搜索错误" in result:
             brave = self.data_mgr.search_brave(query)
@@ -143,13 +212,19 @@ class ToolFactory:
             return f"[写入被拒绝: 不允许写入 {ext} 文件，仅支持 {', '.join(sorted(self.SAFE_WRITE_EXTENSIONS))}]"
         
         if self._is_research_report_path(abs_path) and ext.lower() == ".md":
+            tier, expected_ticker = self._infer_report_context(abs_path)
             quality = self.report_quality_checker.check(
                 content,
                 prior_reports=self._load_related_reports(abs_path),
+                tier=tier,
+                expected_ticker=expected_ticker,
             )
             if not quality["passed"]:
                 self._record_report_write_status(abs_path, False, quality)
-                return "Report quality gate failed: " + json.dumps(quality, ensure_ascii=False)
+                return (
+                    "Report quality gate failed: " + json.dumps(quality, ensure_ascii=False)
+                    + "\n修好上面列出的每一项后重新调用 write_to_file；不要绕过门禁写到别的路径。"
+                )
 
         file_mode = "a" if mode == "a" else "w"
         action = "Appending to" if file_mode == "a" else "Saving to"
@@ -167,6 +242,32 @@ class ToolFactory:
             return f"Successfully {success_action} {abs_path}"
         except Exception as e:
             return f"[File Error: {e}]"
+
+    def _infer_report_context(self, abs_path: str) -> tuple[str, str]:
+        """从报告文件名推断校验档位与预期 ticker。
+
+        命名约定是 `YYYYMMDD_[Ticker]_[Workflow].md`（扫描类为 `YYYYMMDD_Market_Scan.md`），
+        所以档位取文件名中能匹配上 workflow 名的那一段，ticker 取第二段。
+        推断不出来时返回 default 档——宁可放宽，也不要因为文件名不合惯例就拒绝落盘。
+        """
+        stem = os.path.splitext(os.path.basename(abs_path))[0]
+        parts = [p for p in stem.split("_") if p]
+
+        tier = "default"
+        tier_map = ReportQualityChecker.WORKFLOW_TIERS
+        for part in parts:
+            candidate = tier_map.get(part.lower())
+            if candidate:
+                tier = candidate
+                break
+
+        expected_ticker = ""
+        if len(parts) >= 3 and parts[1].lower() not in tier_map:
+            # 第二段是 Market / Core 这类栏目名时不当作 ticker
+            if parts[1].lower() not in {"market", "portfolio", "position"}:
+                expected_ticker = parts[1]
+
+        return tier, expected_ticker
 
     def _is_research_report_path(self, abs_path: str) -> bool:
         try:
@@ -291,6 +392,10 @@ class ToolFactory:
         """
         logger.info("[browser_fetch] %s | %s %s", source, site, command or "")
 
+        denied = self._charge("browser_fetch")
+        if denied:
+            return denied
+
         engines_to_try = []
         if self._source_is_available(source):
             engines_to_try.append(source)
@@ -314,8 +419,9 @@ class ToolFactory:
                 logger.warning("[browser_fetch] %s exception: %s", engine, last_error)
                 continue
 
+        # 降级到网页搜索仍属同一次取证，不再二次扣费
         fallback_query = self._build_browser_fallback_query(site=site, command=command, **kwargs)
-        fallback_result = self.search_web(fallback_query)
+        fallback_result = self._do_search_web(fallback_query)
         if fallback_result.startswith("[Error"):
             return f"[browser_fetch ERROR] Structured fetch failed. Last error: {last_error}\nWeb fallback query: {fallback_query}\n{fallback_result}"
         return (
@@ -548,9 +654,23 @@ class ToolFactory:
             "source_priority": FINANCIAL_SOURCE_PRIORITY,
         }, ensure_ascii=False)
 
-    def check_report_quality(self, markdown: str) -> str:
-        """Validate a research report before saving; returns JSON gate result."""
-        return json.dumps(self.report_quality_checker.check(markdown), ensure_ascii=False)
+    def check_report_quality(self, markdown: str, filename: str = "") -> str:
+        """落盘前自检报告质量，返回 JSON 门禁结果。
+        Validate a research report before saving; returns JSON gate result.
+
+        传入 `filename`（即准备写入的报告路径）会按该报告的档位校验——
+        /deep 与 /quick 的证据密度要求不同，不带 filename 时按最宽松的 default 档，
+        可能出现「自检通过但 write_to_file 被拒」的落差。**务必带上 filename。**
+        """
+        tier, expected_ticker = ("default", "")
+        if filename:
+            tier, expected_ticker = self._infer_report_context(filename)
+        return json.dumps(
+            self.report_quality_checker.check(
+                markdown, tier=tier, expected_ticker=expected_ticker
+            ),
+            ensure_ascii=False,
+        )
 
     def get_portfolio_snapshot(self) -> str:
         """获取当前投资组合的所有持仓快照（含成本、股数、市值）。Get real-time portfolio holdings."""
@@ -623,6 +743,9 @@ class ToolFactory:
           - browser_operate("eval", "document.title")
         """
         logger.info("[browser_operate] Action: %s", action)
+        denied = self._charge("browser_operate")
+        if denied:
+            return denied
         try:
             result = self.data_hub.operate(source_name="opencli", action=action, *args)
             return json.dumps(result.data, ensure_ascii=False)
@@ -646,6 +769,9 @@ class ToolFactory:
            goal: 抓取目标 (默认为 search)
         """
         logger.info("[learn_source] URL: %s Goal: %s", url, goal)
+        denied = self._charge("learn_source")
+        if denied:
+            return denied
         try:
             # Using basic subprocess to call opencli generate
             cmd = ["opencli", "generate", url, "--goal", goal]
@@ -676,6 +802,8 @@ class ToolFactory:
         """
         logger.info("[drill_source] source=%s query=%s", source, query)
 
+        # 委派给 browser_fetch / browser_operate 的分支由被委派方自行扣费，
+        # 这里只对「本方法直接发起外部请求」的分支计费，保证一次请求只扣一次。
         if source == "xueqiu":
             return self.browser_fetch(site="xueqiu", command="search", query=query)
 
@@ -687,7 +815,10 @@ class ToolFactory:
              return self.browser_operate("open", query)
 
         # Default: web search
-        return self.data_mgr.search_web(f"{query} 研报 分析")
+        denied = self._charge("drill_source")
+        if denied:
+            return denied
+        return self._do_search_web(f"{query} 研报 分析") + self._budget_footer()
 
     def get_tools(self) -> list:
         """返回工具函数列表，供 LLM function calling 使用。"""

@@ -304,7 +304,7 @@ class TestResearchAgentChatLock:
         agent.runner = _ConcurrentFakeRunner()
         agent.llm = _ConcurrentFakeLLM()
         agent._chat_lock = threading.RLock()
-        agent._tools = lambda: []
+        agent._tools = lambda workflow_name="": []
 
         results = {}
 

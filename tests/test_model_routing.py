@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import research_cli
+from core import settings
 from research_cli import ResearchAgent, WorkflowRunner
 
 
@@ -16,7 +17,8 @@ class TestPROWorkflows:
     """Verify the PRO_WORKFLOWS set contains the right workflow names."""
 
     def test_pro_workflows_contains_expected(self):
-        expected = {"deep", "value"}
+        # buy/sell 触碰真实下单，与建档级深研同属高后果任务，一并走 Pro
+        expected = {"deep", "value", "buy", "sell"}
         assert ResearchAgent.PRO_WORKFLOWS == expected
 
     def test_pro_workflows_excludes_flash(self):
@@ -24,8 +26,6 @@ class TestPROWorkflows:
             "scan",
             "quick",
             "update",
-            "buy",
-            "sell",
             "position",
             "lead",
             "rethink",
@@ -40,6 +40,37 @@ class TestPROWorkflows:
         }
         for wf in flash_workflows:
             assert wf not in ResearchAgent.PRO_WORKFLOWS
+
+    def test_pro_workflows_can_be_overridden_by_env(self, monkeypatch):
+        monkeypatch.setenv("PRO_WORKFLOWS", "deep, macro")
+        assert settings.model_routing.pro_workflows() == {"deep", "macro"}
+
+
+class TestWorkflowSearchBudget:
+    """预算是单一真理源：settings 声明、工具层强制、提示词注入同一个数字。"""
+
+    def test_per_workflow_budget_differs_by_weight(self):
+        assert settings.workflow_budget.for_workflow("scan") == 28
+        assert settings.workflow_budget.for_workflow("quick") == 2
+        assert settings.workflow_budget.for_workflow("add") == 0
+
+    def test_unknown_workflow_falls_back_to_default(self):
+        assert settings.workflow_budget.for_workflow("nope") == settings.workflow_budget.DEFAULT
+
+    def test_env_override_wins(self, monkeypatch):
+        monkeypatch.setenv("SEARCH_BUDGET_SCAN", "3")
+        assert settings.workflow_budget.for_workflow("scan") == 3
+
+    def test_build_system_instruction_injects_budget(self, tmp_path, monkeypatch):
+        workflow_dir = tmp_path / ".agent" / "workflows"
+        workflow_dir.mkdir(parents=True)
+        (workflow_dir / "quick.md").write_text("QUICK BODY", encoding="utf-8")
+        monkeypatch.setattr(research_cli, "_get_network_date", lambda: ("20260411", "2026-04-11"))
+
+        result = WorkflowRunner(str(tmp_path)).build_system_instruction("quick")
+
+        assert "Search Budget" in result
+        assert "**2 点**" in result
 
 
 class TestRunWorkflowModelRouting:
