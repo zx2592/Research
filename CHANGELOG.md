@@ -5,6 +5,85 @@
 
 ---
 
+## [V4.4] — 2026-08-23
+
+> **主题：工作流全面契约化 + 取数与交叉验证增强 (Contract-Wide Workflows & Cross-Family Validation)**
+>
+> V4.4 做了两件事：把 V4.3 引入但只覆盖 `buy` 的报告契约推广到全部 18 个工作流文件，并修掉交叉验证的一个结构性假阳性——此前"两个独立来源"实际上是同一个 Yahoo 接口调了两遍。
+
+### 工作流全面契约化（18 个文件）
+- **公共契约扩写**（`.agent/workflows/common/`，由 `WorkflowRunner` 自动注入每个工作流）：
+  - `00-report-contract.md`：结论先行改为「一行判决」（评级 · 动作 · 置信度 · 一句理由）；新增**价格证据行**规则；决策/深度类补「关键变化」与「数字底稿」；风险节新增「证据缺口」小节；标题必须带联网日期
+  - `10-evidence-contract.md`：T1–T4 分级细化与新闻分级顺序；关键结论 T1 ≥3 处、核心数字回溯 T2；**联网取证必须走本项目工具**（走别处取的原文证据台账无从回溯）；严禁编造
+  - `20-quality-gate.md`：新增出报告前 8 问自检与末尾印章、落盘前逐项复核表；保留 V4.3 的历史报告冲突门禁
+- **各命令升级**（只改已有工作流，未新增命令）：
+  - `buy`：新增**组合风险预算前置闸门**——一周内配置建议 → 出资账户现金（按币种分池）→ 大类敞口余量 → `preview_trade` what-if，未过直接驳回并结束，不做任何后续个股审计；红线新增内幕消息与非公开信息；价格单源未交叉时裁决封顶 🟡
+  - `lead`：新增 P0 可信度协议（来源状态必填、工具失败必须披露、社交/KOL 默认未证实不得作独立证据、数据缺口优先于补故事）；修正 Step 编号断档
+  - `macro`：新增高收益债 OAS（`BAMLH0A0HYM2`）预警指标；读数必须带读数时间，取不到写「未采集」
+  - `add`：卡片身份改为 `ticker` 与 `title` 至少有一个，**禁止再填 `N/A`**（否则所有行业卡与宏观卡被压成同一条演替链）
+  - `sell` / `option` / `quick` / `update` / `deep` / `value` / `theme`：补价格取证步骤与取数顺序（先原始披露、后新闻正文）
+  - `position` / `optimize` / `scan` / `core` / `verify` / `rethink`：报告模板改为契约章节结构
+  - `add` / `timezone-context` 标注为**纯流程**，不套报告章节契约
+
+### 取数与交叉验证增强
+- **新建** `core/price_consensus.py`（纯逻辑，无 I/O）：
+  - **按来源族判独立性**：`intl-vendor`（Yahoo 一系）/ `cn-exchange-relay`（腾讯、东财、新浪、同花顺、雪球、Tushare）/ `tw-vendor` / `primary-disclosure`，同族互比不算交叉
+  - `passed` 需同时满足三条：≥2 个独立族、偏差 ≤ 容差、跨族数值不完全相同（完全相同判 `suspect_same_source`，`allow_identical=True` 可放行）
+  - 误差三档：≤1% 一致 / 1–5% 存在差异 / >5% 重大差异须回原始披露
+  - 共识值取中位数；输出 `verdict` 一行，可原样抄进报告结论区
+  - `verify_market_cap()`：股价 × 总股本 vs 披露市值，偏差 >5% 提示核对股本口径
+- **新建数据源**（零依赖、免鉴权；urllib 直连 + `curl --noproxy` 回退）：
+  - `services/datahub/sources/tencent_src.py`：腾讯行情 `qt.gtimg.cn`，覆盖 A股/港股/美股，属 `cn-exchange-relay` 族，为交叉验证提供**真正跨族**的第二来源。港美股 `~` 分隔布局与 A 股不同，只取通用字段，不给错位数字
+  - `services/datahub/sources/eastmoney_src.py`：东财 push2 行情（补腾讯协议没有的 52 周高低、PE、PB）+ datacenter 结构化年报（营收 / 归母净利 / EPS / ROE / 毛利率 / 增速）
+  - `services/datahub/sources/_http.py`：共用的零依赖 HTTP helper（UTF-8 / GBK 混合解码、代理绕过）
+- **ToolFactory 工具 16 → 19**：
+  - `cross_validate_metric(field, values, unit)`：任一财务指标的多源交叉验证与误差分档
+  - `verify_market_cap(price, shares, reported_cap)`：市值验算
+  - `get_financials(ticker, years)`：A股走东财结构化年报；其余市场返回该市场的来源优先级表（主源 / 副源 / 一手披露）
+- `research_cli.py`：DataHub 默认注册新增腾讯行情与东方财富
+
+### 行为变化（需要注意）
+- **`cross_validate_price` 的 `passed` 语义改变**：旧实现的两个来源（`fetch_market_prices` 与 `yfinance` DataSource）都走同一个 `_fetch_quote_via_urllib`（Yahoo chart API），偏差恒为 0、`passed` 恒为 `true`。新实现下只有跨族且数值不同才 `true`。盘后两源都取官方收盘价、数值完全相同时会判 `suspect_same_source` 走单源路径——这是刻意的保守取舍，可用 `allow_identical=True` 放行
+- 旧返回字段 `spread_pct` 保留；新增 `grade` / `verdict` / `consensus_price` / `independent_family_count` / `families` / `identical_values` / `reason`
+
+### 文档同步
+- `README.md`：新增「研究质量保障」章节（三层约束：契约注入 / 落盘门禁 / 跨族交叉验证）；核心能力表补两行；数据源表补腾讯行情与东方财富；项目结构补 `common/`、`price_consensus.py`、`report_quality.py`；修正 Pro 模型口径（实际为 `deep` / `value`，`verify` 不在其中）
+- `.agent/workflows/deep.md` / `value.md`：取数顺序补 `get_financials` 与 `cross_validate_metric`
+
+### 测试
+- **新建** `tests/test_price_consensus.py`（22 项）：来源族映射、三档偏差、同族不算交叉、跨族通过、完全相同判疑似同源、中位数共识、市值验算
+- **新建** `tests/test_market_sources.py`（29 项）：腾讯代码归一化（沪/深/北/港/美）、`~` 报文解析、港股不给 A 股专属字段、网络失败返回错误负载而非抛异常；东财 secid 前缀、push2delay → push2 回退、结构化年报解析、取不到数据如实报缺
+- `tests/test_tool_factory.py`：改写断言旧假阳性的用例，补 11 项（跨族通过 / 同族拒绝 / 完全相同 / 单源、指标交叉验证、市值验算、`get_financials` 分市场路由）
+- 相关测试 **121 passed**；全量套件与改动前同为 18 项失败（沙箱缺 `yfinance` / `telegram` / `google-genai` 等可选依赖，与本次改动无关）
+
+### 已知边界
+- 腾讯行情与东方财富的 HTTP 路径**未做实网冒烟验证**（开发沙箱出网白名单不含 `qt.gtimg.cn` 与 `push2delay.eastmoney.com`），字段解析按公开协议字段位实现并由打桩测试覆盖，首次部署建议本机验证一次
+- `get_financials` 的结构化年报目前只覆盖 A 股；美股 / 港股 / 台股返回来源优先级表，由 `browser_fetch` / `drill_source` 回一手披露取数
+
+---
+
+## [V4.3] — 2026-08-04
+
+> **主题：工作流报告契约 + 质量门 + 工具工厂增强 (Report Contract & Quality Gate)**
+>
+> V4.3 引入了报告质量的代码级门禁：报告不再只靠提示词自律，落盘前必须通过结构、证据与历史冲突校验。
+
+### 报告契约体系
+- **新建** `.agent/workflows/common/`，由 `WorkflowRunner.load_common_rules()` 拼接注入每个工作流：
+  - `00-report-contract.md`：报告必备章节（结论先行 / 实时数据快照 / 证据台账 / Bull-Base-Bear / 行动计划 / 风险与不确定性 / 质量自检）
+  - `10-evidence-contract.md`：Tier 1–4 证据分级与强制规则
+  - `20-quality-gate.md`：保存前硬门槛与历史报告冲突门禁
+- `research_cli.py`：`WorkflowRunner` 增加公共规则加载与注入
+
+### 报告质量校验
+- **新建** `core/report_quality.py`：`ReportQualityChecker` 校验章节完整性、顶层标题、显式日期、来源引用、多空双边视角，并比对同一标的的历史报告，检测动作反转与关键数据方向反转等未解释冲突
+- `core/tool_factory.py`：`write_to_file` 对 `Reports/**/*.md` 启用硬门禁，不合格直接拒绝写入；新增 `check_report_quality` 工具供模型自检
+
+### 测试
+- **新建** `tests/test_report_quality.py`；更新 `tests/test_tool_factory.py` 与 `tests/test_model_routing.py`
+
+---
+
 ## [V4.2] — 2026-06-03
 
 > **主题：多 Provider 接入 — OpenAI / OpenRouter / Qwen（含工具循环）(Multi-Provider with Tool Loop)**

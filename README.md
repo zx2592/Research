@@ -6,7 +6,9 @@
 
 将多源市场数据、LLM 驱动的研究 SOP、知识沉淀、组合账本与执行风控组织成一套完整的投研系统。
 
-[快速开始](#快速开始) · [系统架构](#系统架构) · [研究工作流](#研究工作流) · [配置](#配置) · [路线图](#路线图) · [贡献](#贡献)
+[快速开始](#快速开始) · [系统架构](#系统架构) · [研究工作流](#研究工作流) · [研究质量保障](#研究质量保障) · [配置](#配置) · [路线图](#路线图) · [贡献](#贡献)
+
+**当前版本 V4.4** · [版本历史](CHANGELOG.md)
 
 </div>
 
@@ -21,7 +23,8 @@
 传统投研工具往往把数据采集、分析提示词、报告归档和交易记录分散在不同应用中。AlphaSystem 将这些环节收敛到一条可追踪的研究链路：
 
 - **从信号到结论**：统一接入行情、搜索、RSS、公告和社交信息，并通过缓存减少重复请求。
-- **从结论到证据**：17 个研究工作流把市场扫描、个股深研、事实核查、交易审计和组合复盘固化为可复用 SOP。
+- **从结论到证据**：17 个研究工作流把市场扫描、个股深研、事实核查、交易审计和组合复盘固化为可复用 SOP，全部受统一的报告契约、证据契约与质量门约束。
+- **从"取到数"到"取到能交叉的数"**：交叉验证按**来源族**判独立性——同一份交易所行情的多个门面互相比对不算交叉，价格结论必须申报交叉与否。
 - **从一次分析到长期记忆**：报告、知识卡片、持仓事件与组合快照保留研究上下文。
 - **从建议到受控执行**：可选执行管线在订单进入适配器前依次经过 KillSwitch、GuardChain 和 Wallet 审计。
 - **从单一模型到多 Provider**：默认支持 Gemini，也可切换到 OpenAI、OpenRouter 或 Qwen 的 OpenAI 兼容接口。
@@ -30,8 +33,10 @@
 
 | 能力 | 说明 |
 |:---|:---|
-| 多源数据接入 | DataHub 封装 yfinance、Tushare、Tavily、Brave、RSS、OpenBB、opencli、bb-browser 等数据源，并提供本地缓存 |
+| 多源数据接入 | DataHub 封装 yfinance、腾讯行情、东方财富、Tushare、Tavily、Brave、RSS、OpenBB、opencli、bb-browser 等数据源，并提供本地缓存 |
 | 标准化研究 | 17 个 Markdown 工作流定义市场发现、个股研究、交易审计、组合管理与复盘流程 |
+| 报告契约与质量门 | 公共契约自动注入每个工作流；报告落盘前必须通过 `check_report_quality` 的结构、证据与冲突检查 |
+| 跨族交叉验证 | 价格与财务指标按来源族判独立性，输出可直接抄进报告的证据判定与误差分档 |
 | LLM 工具调用 | Gemini 自动函数调用；OpenAI 兼容 Provider 通过手动 tool loop 使用同一组 Python 工具 |
 | 证据与产物 | ToolBus 管理工具预算与证据，结构化产物可写入报告和知识库 |
 | 组合账本 | 基于 SQLite 的事件溯源账本使用 `Decimal` 计算，可通过事件回放重建持仓状态 |
@@ -232,7 +237,44 @@ python trigger_service.py --disable-price
 | `/rethink` | `[Ticker]` | 区分流程质量与运气，对交易进行复盘纠偏 |
 | `/add` | — | 从最近研究中提取知识卡片并写入本地知识库 |
 
-`/deep`、`/value` 和 `/verify` 在当前 CLI 路由中使用 Pro 模型，其余研究工作流使用常规模型。模型名称可以通过环境变量覆盖。
+`/deep` 与 `/value` 在当前 CLI 路由中使用 Pro 模型（`ResearchAgent.PRO_WORKFLOWS`），其余研究工作流使用常规模型。模型名称可以通过环境变量覆盖。
+
+## 研究质量保障
+
+研究报告的价值取决于它能不能被复核。AlphaSystem 把这件事从"提示词里提醒一句"变成三层代码级约束。
+
+### 1. 公共契约自动注入
+
+`.agent/workflows/common/` 下的三份契约由 `WorkflowRunner` 拼接在每个工作流之前，无需在各工作流里重复：
+
+| 契约 | 约束内容 |
+|:---|:---|
+| `00-report-contract.md` | 报告必备的八个章节、结论先行的一行判决、**价格证据行**、关键变化与数字底稿 |
+| `10-evidence-contract.md` | T1–T4 来源分级、分市场的数据源优先级、来源族、误差分档、股价复权口径 |
+| `20-quality-gate.md` | 出报告前的 8 问自检与印章、落盘前逐项复核表、历史报告冲突门禁 |
+
+### 2. 落盘前的硬门禁
+
+`write_to_file` 写入 `Reports/**/*.md` 时会先跑 `check_report_quality`：缺章节、无日期、无来源、只有单边观点、与同一标的的历史报告结论冲突却没有 `## 冲突解释`——任一条不过就拒绝写入并返回缺陷清单。
+
+### 3. 跨族交叉验证
+
+"取到两个数"不等于"交叉验证过"。腾讯财经、东方财富、新浪、同花顺、雪球都在转发同一份交易所行情，它们互相比对得到的 0.00% 偏差不是最高可信度，而是同一份数据比了两遍。
+
+`cross_validate_price` 因此按**来源族**判独立性，`passed` 需同时满足三条：
+
+1. 至少两个不同来源族给出数值（`intl-vendor` / `cn-exchange-relay` / `tw-vendor` / `primary-disclosure`）；
+2. 跨族偏差在容差内；
+3. 跨族数值不完全相同——两个真正独立的来源几乎不可能分毫不差。
+
+未通过不是错误，是**未过项**：报告照常写，如实申报"单源未交叉"，但不得给出目标价、止损与盈亏比。工具返回的 `verdict` 是一句可以直接抄进结论区的话：
+
+```text
+价格证据：1502 · 2 源已交叉，偏差 0.13%（fetch_market_prices / tencent:qt.gtimg.cn，2026-08-23T07:31Z）
+价格证据：153.7 · 单源未交叉（fetch_market_prices）——所有读数来自同一来源族，互相比对不构成交叉；本次不得给出目标价、止损与盈亏比
+```
+
+财务指标用 `cross_validate_metric` 走同一套逻辑，按 ≤1% ✅ / 1–5% ⚠️ / >5% ❌ 三档给结论；`verify_market_cap` 验算股价 × 总股本与披露市值的偏差，用来发现增发、回购、库存股与 ADR 存托比率带来的口径错配。
 
 ## 配置
 
@@ -256,6 +298,8 @@ OpenAI、OpenRouter 与 Qwen 共用 `core/llm_providers.py` 中的 OpenAI 兼容
 | 来源 | 主要用途 | 配置或依赖 |
 |:---|:---|:---|
 | yfinance | 多市场行情与财务数据 | `yfinance` |
+| 腾讯行情 | A股 / 港股 / 美股实时快照，交叉验证的跨族第二来源 | 无需配置（零依赖直连） |
+| 东方财富 | A股 52 周区间、估值指标与结构化年报财务 | 无需配置（零依赖直连） |
 | Tushare | A 股行情、基本面与公告 | `TUSHARE_TOKEN` |
 | Tavily | 研究型网页搜索 | `TAVILY_API_KEY` |
 | Brave | 备用网页搜索 | `BRAVE_SEARCH_API_KEY` |
@@ -265,14 +309,17 @@ OpenAI、OpenRouter 与 Qwen 共用 `core/llm_providers.py` 中的 OpenAI 兼容
 | bb-browser | 浏览器与社交数据 | Playwright MCP / 本地浏览器环境 |
 | Kanzhiqiu | 社区摘要集成 | 本地 `integrations/kanzhiqiu/` 客户端 |
 
-DataHub 的 source 模块定义了这些适配器；实际 CLI 默认注册 bb-browser 与 opencli，其余来源由脚本、ToolFactory 或调用方按需启用。
+DataHub 的 source 模块定义了这些适配器；CLI 默认注册 bb-browser、opencli、yfinance、腾讯行情与东方财富，其余来源由脚本、ToolFactory 或调用方按需启用。腾讯行情与东方财富只用 stdlib（urllib 直连，失败回退 `curl --noproxy`），不需要 token。
 
 ## 项目结构
 
 ```text
 Research/
 ├── .agent/workflows/       # 17 个用户工作流 + 共享时间上下文
+│   └── common/             # 报告契约 / 证据契约 / 质量门（自动注入每个工作流）
 ├── core/                   # LLM、配置、工具、证据、产物与知识索引
+│   ├── price_consensus.py  # 来源族判定、交叉验证分档、市值验算
+│   └── report_quality.py   # 报告结构、证据与历史冲突校验
 ├── services/
 │   ├── datahub/            # 数据源抽象、适配器与缓存
 │   ├── execution/          # KillSwitch、GuardChain、Wallet 与执行适配器
