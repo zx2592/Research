@@ -72,6 +72,49 @@ class WorkflowBudgetSettings:
         return cls.PER_WORKFLOW.get(key, cls.DEFAULT)
 
 
+class WorkflowStageSettings:
+    """多阶段工作流定义（progressive disclosure + 上下文隔离）。
+
+    单阶段工作流把「研究过程 + 报告骨架 + 契约」一次性塞进一个 system instruction，
+    再跑最多 15 轮工具循环——每一轮都把这一整坨重新发一遍。深研类工作流因此最贵。
+
+    拆成阶段后有两处收益：
+    1. 每个阶段只装自己那一半（研究阶段不需要报告骨架，组装阶段不需要搜索纪律）；
+    2. 组装阶段不再继承研究阶段的工具调用历史，上下文从「一路累积」变成「只带结论」。
+
+    `contracts` 指定该阶段加载哪几份公共契约（按文件名前缀）：
+    00=报告结构 10=证据标准 20=质量门禁。
+    """
+
+    # (阶段名, 阶段指令文件, 加载的契约, 是否用 Pro)
+    STAGES: dict[str, tuple[tuple[str, str, tuple[str, ...], bool], ...]] = {
+        "deep": (
+            ("research", "stages/deep-1-research.md", ("00", "10"), True),
+            ("assemble", "stages/deep-2-assemble.md", ("00", "20"), False),
+            ("critique", "stages/critique.md", ("20",), False),
+        ),
+        "value": (
+            ("research", "stages/value-1-research.md", ("00", "10"), True),
+            ("assemble", "stages/value-2-assemble.md", ("00", "20"), False),
+            ("critique", "stages/critique.md", ("20",), False),
+        ),
+    }
+
+    @classmethod
+    def stages_for(cls, name: str) -> tuple:
+        """返回该 workflow 的阶段定义；单阶段工作流返回空元组。
+
+        `WORKFLOW_STAGES_DISABLED=1` 可整体退回单阶段模式，便于对照排查。
+        """
+        if config.get_bool("WORKFLOW_STAGES_DISABLED", False):
+            return ()
+        return cls.STAGES.get((name or "").strip().lower(), ())
+
+    @classmethod
+    def is_staged(cls, name: str) -> bool:
+        return bool(cls.stages_for(name))
+
+
 class ModelRoutingSettings:
     """模型分档路由。
 
@@ -112,6 +155,7 @@ execution = ExecutionSettings()
 search = SearchSettings()
 workflow_budget = WorkflowBudgetSettings()
 model_routing = ModelRoutingSettings()
+workflow_stages = WorkflowStageSettings()
 trigger = TriggerSettings()
 bot = BotSettings()
 tool_loop = ToolLoopSettings()

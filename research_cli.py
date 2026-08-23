@@ -93,7 +93,13 @@ class WorkflowRunner:
             print(f"  Workflow not found: .agent/workflows/{name}.md")
         return content
 
-    def load_common_rules(self) -> str:
+    def load_common_rules(self, only: tuple[str, ...] | None = None) -> str:
+        """加载公共契约。
+
+        `only` 给出文件名前缀（如 `("00", "20")`）时只加载这几份——
+        分阶段执行时研究阶段不需要质量门禁、组装阶段不需要搜索纪律，
+        按需加载能省下每一轮工具循环都要重发的那几 KB。
+        """
         common_dir = os.path.join(self.root, ".agent", "workflows", "common")
         if not os.path.isdir(common_dir):
             return ""
@@ -102,12 +108,21 @@ class WorkflowRunner:
         for filename in sorted(os.listdir(common_dir)):
             if not filename.endswith(".md"):
                 continue
+            if only is not None and not filename.startswith(tuple(only)):
+                continue
             content = self._read(f".agent/workflows/common/{filename}")
             if content:
                 parts.append(content)
         if not parts:
             return ""
         return "\n\n---\n## Common Workflow Quality Rules\n" + "\n\n---\n".join(parts)
+
+    def load_stage(self, rel_path: str) -> str:
+        """加载阶段指令文件（相对 .agent/workflows/）。"""
+        content = self._read(f".agent/workflows/{rel_path}")
+        if not content:
+            print(f"  Stage file not found: .agent/workflows/{rel_path}")
+        return content
 
     def load_latest_rss(self) -> str:
         anchor_date = datetime.strptime(self._date_iso, "%Y-%m-%d")
@@ -119,15 +134,34 @@ class WorkflowRunner:
                 return f"[RSS情报 {d.strftime('%Y%m%d')}]\n{content}"
         return ""
 
-    def build_system_instruction(self, workflow_name: str) -> str:
-        """Build the system instruction from workflow content and optional RSS context."""
+    def build_system_instruction(
+        self,
+        workflow_name: str,
+        stage: tuple | None = None,
+        remaining_budget: int | None = None,
+    ) -> str:
+        """Build the system instruction from workflow content and optional RSS context.
+
+        `stage` 为 `(阶段名, 阶段文件, 契约前缀, use_pro)` 时构建该阶段的指令：
+        只装该阶段声明的公共契约，并在 workflow 正文之后追加阶段指令。
+        """
         workflow = self.load_workflow(workflow_name)
-        common_rules = self.load_common_rules()
+        contracts = stage[2] if stage else None
+        common_rules = self.load_common_rules(only=contracts)
         parts = []
         if common_rules:
             parts.append(common_rules)
             parts.append("\n\n---\n## Workflow-Specific Instructions\n")
         parts.append(workflow or f"[workflow not found: {workflow_name}]")
+
+        if stage:
+            stage_name, stage_file = stage[0], stage[1]
+            stage_body = self.load_stage(stage_file)
+            parts.append(
+                f"\n\n---\n## 当前阶段：{stage_name}\n"
+                f"本次调用**只做这一个阶段**的事。阶段之外的步骤不要提前做，也不要重复上一阶段已完成的取证。\n\n"
+                + (stage_body or f"[stage file not found: {stage_file}]")
+            )
 
         # 注入真实日期（网络时间优先，避免 Windows 时钟偏移）
         parts.append(
@@ -138,10 +172,15 @@ class WorkflowRunner:
 
         # 注入取证预算：与 ToolFactory 在工具层强制的是同一个数字（settings 单一真理源），
         # 提示词里写多少、代码就拦多少，不再出现「正文写 28 次、SYSTEM.md 写 8 次」的分歧。
-        budget = settings.workflow_budget.for_workflow(workflow_name)
+        budget = (
+            remaining_budget
+            if remaining_budget is not None
+            else settings.workflow_budget.for_workflow(workflow_name)
+        )
+        scope = "本阶段可用" if stage else "本次 workflow"
         parts.append(
             f"\n---\n## Search Budget\n"
-            f"本次 workflow 的联网取证预算为 **{budget} 点**"
+            f"{scope}的联网取证预算为 **{budget} 点**"
             f"（search_web / browser_fetch / drill_source 各 1 点，learn_source 2 点）。\n"
             f"预算由代码强制：超出后取证工具会直接拒绝调用，你将只能用已有证据完成报告。\n"
             f"请把预算花在最关键的交叉验证上，不要用它做重复查询。\n"
@@ -233,31 +272,24 @@ class ResearchAgent:
         return factory.get_tools()
 
     def run_workflow(self, workflow_name: str, task: str, ticker: str = None) -> str:
-        """Run a named workflow in a fresh chat session."""
-        with self._chat_lock:
-            use_pro = workflow_name in self.PRO_WORKFLOWS
-            model_label = "Pro" if use_pro else "Flash"
-            budget_max = settings.workflow_budget.for_workflow(workflow_name)
-            print(
-                f"\nWorkflow [{workflow_name}] | Ticker: {ticker or 'N/A'} | "
-                f"Model: {model_label} | Search budget: {budget_max}"
-            )
-            print("   Python pre-loading context...")
+        """Run a named workflow in a fresh chat session.
 
-            # 每轮 workflow 一份全新预算，避免上一轮的消耗影响这一轮
+        多阶段工作流（见 settings.WorkflowStageSettings）按阶段串行执行：
+        每个阶段是一次独立的 chat session，只装自己那部分契约与指令，
+        且**不继承上一阶段的工具调用历史**——上一阶段的产出通过磁盘文件传递。
+        取证预算在整个 workflow 内共享，不按阶段重置。
+        """
+        with self._chat_lock:
+            budget_max = settings.workflow_budget.for_workflow(workflow_name)
+            stages = settings.workflow_stages.stages_for(workflow_name)
+
+            # 每轮 workflow 一份全新预算，阶段之间共享
             self._budget = BudgetManager(max_budget=budget_max)
 
-            system_instruction = self.runner.build_system_instruction(workflow_name)
-
-            print(f"   Context ready ({len(system_instruction)} chars). Launching LLM...")
-
-            # 每次 workflow 创建新的独立 session（兼容 VPS 和桌面模式）
-            self.llm.reset()
-            self.llm.system_instruction = system_instruction
-            self.llm.create_chat(tools=self._tools(workflow_name), use_pro=use_pro)
-
             try:
-                result = self.llm.chat(task)
+                if stages:
+                    return self._run_staged(workflow_name, task, ticker, stages, budget_max)
+                return self._run_single(workflow_name, task, ticker, budget_max)
             finally:
                 usage = self._budget.usage_report()
                 print(
@@ -265,8 +297,74 @@ class ResearchAgent:
                     f" (remaining {usage['remaining']})"
                 )
                 self._budget = None
-            print(f"\nWorkflow [{workflow_name}] complete.\n")
-            return result
+
+    def _run_single(self, workflow_name: str, task: str, ticker: str, budget_max: int) -> str:
+        use_pro = workflow_name in self.PRO_WORKFLOWS
+        model_label = "Pro" if use_pro else "Flash"
+        print(
+            f"\nWorkflow [{workflow_name}] | Ticker: {ticker or 'N/A'} | "
+            f"Model: {model_label} | Search budget: {budget_max}"
+        )
+        print("   Python pre-loading context...")
+
+        system_instruction = self.runner.build_system_instruction(workflow_name)
+        print(f"   Context ready ({len(system_instruction)} chars). Launching LLM...")
+
+        result = self._chat_once(workflow_name, system_instruction, task, use_pro)
+        print(f"\nWorkflow [{workflow_name}] complete.\n")
+        return result
+
+    def _run_staged(
+        self, workflow_name: str, task: str, ticker: str, stages: tuple, budget_max: int
+    ) -> str:
+        print(
+            f"\nWorkflow [{workflow_name}] | Ticker: {ticker or 'N/A'} | "
+            f"Stages: {len(stages)} | Search budget: {budget_max} (shared)"
+        )
+
+        result = ""
+        for index, stage in enumerate(stages, start=1):
+            stage_name, _, _, stage_pro = stage
+            use_pro = stage_pro and workflow_name in self.PRO_WORKFLOWS
+            remaining = self._budget.remaining()
+            print(
+                f"\n   Stage {index}/{len(stages)} [{stage_name}] | "
+                f"Model: {'Pro' if use_pro else 'Flash'} | Budget left: {remaining}"
+            )
+
+            system_instruction = self.runner.build_system_instruction(
+                workflow_name, stage=stage, remaining_budget=remaining
+            )
+            print(f"   Context ready ({len(system_instruction)} chars). Launching LLM...")
+
+            stage_task = self._stage_task(task, stage_name, index, len(stages), result)
+            result = self._chat_once(workflow_name, system_instruction, stage_task, use_pro)
+
+        print(f"\nWorkflow [{workflow_name}] complete ({len(stages)} stages).\n")
+        return result
+
+    @staticmethod
+    def _stage_task(task: str, stage_name: str, index: int, total: int, prior: str) -> str:
+        """拼装阶段任务。
+
+        只把上一阶段的**结论文本**带下来，不带工具调用历史——
+        大块中间产物应由上一阶段落盘，下一阶段用 read_file 取，
+        这样上下文不会随阶段线性膨胀。
+        """
+        header = f"[阶段 {index}/{total}: {stage_name}]\n原始任务: {task}"
+        if not prior:
+            return header
+        return (
+            f"{header}\n\n---\n上一阶段的交接说明（工具调用历史不再保留，"
+            f"需要原始数据请按其中指引 read_file 读取）：\n{prior}"
+        )
+
+    def _chat_once(self, workflow_name: str, system_instruction: str, task: str, use_pro: bool) -> str:
+        """一次独立的 chat session。每次都 reset，保证阶段之间上下文隔离。"""
+        self.llm.reset()
+        self.llm.system_instruction = system_instruction
+        self.llm.create_chat(tools=self._tools(workflow_name), use_pro=use_pro)
+        return self.llm.chat(task)
 
     def run(self, user_input: str) -> str:
         """Run free-text input in the existing chat session."""

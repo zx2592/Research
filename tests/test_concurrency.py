@@ -279,7 +279,7 @@ class TestUnauthAttemptsBounded:
 
 
 class _ConcurrentFakeRunner:
-    def build_system_instruction(self, workflow_name):
+    def build_system_instruction(self, workflow_name, stage=None, remaining_budget=None):
         return f"SYSTEM::{workflow_name}"
 
 
